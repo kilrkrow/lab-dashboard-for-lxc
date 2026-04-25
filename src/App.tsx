@@ -1,4 +1,4 @@
-import { Search, Hexagon, ArrowDownAZ } from 'lucide-react';
+import { Search, Hexagon, ArrowDownAZ, Pencil } from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
 import './index.css';
 
@@ -16,6 +16,7 @@ export interface CategoryConfig {
 
 interface DashboardData {
   title: string;
+  editConfigUrl?: string;
   categories: CategoryConfig[];
 }
 
@@ -47,13 +48,40 @@ function AppCard({ app }: { app: AppConfig }) {
 }
 
 function CategorySection({ category, apps }: { category: string, apps: AppConfig[] }) {
+  const [isAlphaSort, setIsAlphaSort] = useState(false);
+  
   if (apps.length === 0) return null;
   
+  const displayedApps = isAlphaSort 
+    ? [...apps].sort((a, b) => a.name.localeCompare(b.name))
+    : apps;
+
   return (
     <section className="category-section">
-      <h2 className="category-title">{category}</h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+        <h2 className="category-title" style={{ marginBottom: 0 }}>{category}</h2>
+        <button 
+          className={`icon-button ${isAlphaSort ? 'active' : ''}`}
+          onClick={() => setIsAlphaSort(!isAlphaSort)}
+          title="Toggle Alphabetical Sort"
+          style={{
+            background: isAlphaSort ? 'rgba(0, 240, 255, 0.1)' : 'transparent',
+            border: isAlphaSort ? '1px solid rgba(0, 240, 255, 0.3)' : '1px solid rgba(255,255,255,0.05)',
+            borderRadius: '6px',
+            padding: '4px 8px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: isAlphaSort ? 'var(--accent-color)' : 'var(--text-secondary)',
+            transition: 'all 0.3s ease'
+          }}
+        >
+          <ArrowDownAZ size={16} />
+        </button>
+      </div>
       <div className="grid-container">
-        {apps.map((app, idx) => (
+        {displayedApps.map((app, idx) => (
           <AppCard key={idx} app={app} />
         ))}
       </div>
@@ -65,7 +93,6 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isAlphaSort, setIsAlphaSort] = useState(false);
 
   useEffect(() => {
     fetch('/config.json')
@@ -80,7 +107,7 @@ function App() {
       });
   }, []);
 
-  // Filter apps based on search query and sort
+  // Filter apps based on search query
   const filteredConfig = useMemo(() => {
     if (!dashboardData) return [];
     
@@ -89,7 +116,6 @@ function App() {
     return dashboardData.categories.map(category => {
       let filteredApps = category.apps;
       
-      // Filter by search query if it exists
       if (query) {
         filteredApps = filteredApps.filter(app => 
           app.name.toLowerCase().includes(query) || 
@@ -97,17 +123,12 @@ function App() {
         );
       }
       
-      // Sort alphabetically if enabled
-      if (isAlphaSort) {
-        filteredApps = [...filteredApps].sort((a, b) => a.name.localeCompare(b.name));
-      }
-      
       return {
         ...category,
         apps: filteredApps
       };
     }).filter(category => category.apps.length > 0);
-  }, [searchQuery, dashboardData, isAlphaSort]);
+  }, [searchQuery, dashboardData]);
 
   if (loading) {
     return (
@@ -126,25 +147,30 @@ function App() {
         </div>
         
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          <button 
-            className={`icon-button ${isAlphaSort ? 'active' : ''}`}
-            onClick={() => setIsAlphaSort(!isAlphaSort)}
-            title="Toggle Alphabetical Sort"
-            style={{
-              background: isAlphaSort ? 'rgba(0, 240, 255, 0.1)' : 'transparent',
-              border: isAlphaSort ? '1px solid rgba(0, 240, 255, 0.3)' : '1px solid rgba(255,255,255,0.1)',
-              borderRadius: '8px',
-              padding: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: isAlphaSort ? 'var(--accent-color)' : 'var(--text-secondary)',
-              transition: 'all 0.3s ease'
-            }}
-          >
-            <ArrowDownAZ size={18} />
-          </button>
+          {dashboardData?.editConfigUrl && (
+            <a 
+              href={dashboardData.editConfigUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              title="Edit Configuration"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '8px',
+                color: 'var(--text-secondary)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '8px',
+                transition: 'all 0.3s ease',
+                cursor: 'pointer',
+                textDecoration: 'none'
+              }}
+              onMouseOver={(e) => { e.currentTarget.style.color = 'var(--accent-color)'; e.currentTarget.style.borderColor = 'rgba(0, 240, 255, 0.3)'; }}
+              onMouseOut={(e) => { e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
+            >
+              <Pencil size={18} />
+            </a>
+          )}
 
           <div className="search-container">
             <Search size={18} className="search-icon" />

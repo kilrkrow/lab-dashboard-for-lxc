@@ -1,5 +1,6 @@
 {
   "title": "My Home Lab",
+  "editConfigUrl": "https://github.com/username/my-repo/edit/main/config.json",
   "categories": [
     {
       "name": "Apps",

@@ -1,5 +1,6 @@
 {
   "title": "Haven Lab",
+  "editConfigUrl": "https://github.com/kilrkrow/homelab-stacks/edit/main/dashboard-haven-lab/config.json",
   "categories": [
     {
       "name": "Jesus is Lord",
