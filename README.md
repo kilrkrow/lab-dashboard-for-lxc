@@ -1,73 +1,75 @@
-# React + TypeScript + Vite
+# Haven Lab Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A premium, lightweight, fully static homelab dashboard featuring a modern glassmorphism design. Built specifically to be hosted on ultra-low-resource environments (like Proxmox LXC containers or basic Nginx servers) without the heavy overhead of Docker containers.
 
-Currently, two official plugins are available:
+![Haven Lab Dashboard Screenshot](public/icons.svg) <!-- Replace with an actual screenshot -->
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Features
+- 🚀 **Zero Overhead**: Compiles to pure static HTML/JS/CSS. Can run on an LXC with 30MB of RAM.
+- 🎨 **Glassmorphism UI**: Dynamic radial gradients, backdrop blurs, and micro-animations.
+- 🔍 **Real-time Search**: Instantly filter hundreds of tiles.
+- 🔤 **Category Sorting**: Independent A-Z sorting toggles per category.
+- ✏️ **Web Editor Integration**: Link your configuration directly to your private GitHub repo for seamless in-browser editing.
+- 🖼️ **Smart Icons**: Uses the [walkxcode/dashboard-icons](https://github.com/walkxcode/dashboard-icons) CDN. Falls back to a smart letter avatar if an icon fails to load.
 
-## React Compiler
+## Getting Started
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/kilrkrow/lab-dashboard-for-lxc.git
+   cd lab-dashboard-for-lxc
+   npm install
+   ```
 
-## Expanding the ESLint configuration
+2. Copy the example configuration to create your own:
+   ```bash
+   cp public/config.example.json public/config.json
+   ```
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+3. Start the development server:
+   ```bash
+   npm run dev
+   ```
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Configuration (`config.json`)
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+All dashboard data is loaded dynamically at runtime via `public/config.json`. Because it is loaded at runtime, **you should add `public/config.json` to your `.gitignore`** so you don't accidentally push your private internal IPs to a public repository!
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### The "Edit Config" Pencil Icon
+To make editing your dashboard completely frictionless, you can host your `config.json` in a separate *private* GitHub repository. 
+
+If you add the `editConfigUrl` field to your config, a "Pencil" icon will appear in the top right of the dashboard. When clicked, it will open GitHub's beautiful web-based JSON editor right to your config file!
+
+```json
+{
+  "title": "My Home Lab",
+  "editConfigUrl": "https://github.com/YOUR_USERNAME/YOUR_PRIVATE_REPO/edit/main/config.json",
+  "categories": [
+    {
+      "name": "SysAdmin",
+      "apps": [
+        { 
+          "name": "Proxmox", 
+          "url": "https://192.168.1.100:8006", 
+          "description": "Hypervisor", 
+          "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/proxmox.png" 
+        }
+      ]
+    }
+  ]
+}
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### Finding Icons
+This dashboard natively relies on the massive [walkxcode/dashboard-icons](https://github.com/walkxcode/dashboard-icons) collection. 
+Simply find the app you want in their repo, and use the raw CDN link:
+`https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/[icon-name].png`
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Building for Production
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+When you are ready to deploy:
+```bash
+npm run build
 ```
+
+This will generate a `dist/` directory. Simply copy the contents of `dist/` to any standard web server (like `/var/www/html/` on an Nginx server). Because the configuration is dynamically fetched at runtime, you can just drop your private `config.json` right next to the compiled `index.html`.
