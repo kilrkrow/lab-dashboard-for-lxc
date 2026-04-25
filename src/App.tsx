@@ -1,4 +1,4 @@
-import { Search, Hexagon } from 'lucide-react';
+import { Search, Hexagon, ArrowDownAZ } from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
 import './index.css';
 
@@ -65,6 +65,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isAlphaSort, setIsAlphaSort] = useState(false);
 
   useEffect(() => {
     fetch('/config.json')
@@ -79,23 +80,34 @@ function App() {
       });
   }, []);
 
-  // Filter apps based on search query
+  // Filter apps based on search query and sort
   const filteredConfig = useMemo(() => {
     if (!dashboardData) return [];
-    if (!searchQuery) return dashboardData.categories;
     
     const query = searchQuery.toLowerCase();
     
     return dashboardData.categories.map(category => {
-      return {
-        ...category,
-        apps: category.apps.filter(app => 
+      let filteredApps = category.apps;
+      
+      // Filter by search query if it exists
+      if (query) {
+        filteredApps = filteredApps.filter(app => 
           app.name.toLowerCase().includes(query) || 
           (app.description && app.description.toLowerCase().includes(query))
-        )
+        );
+      }
+      
+      // Sort alphabetically if enabled
+      if (isAlphaSort) {
+        filteredApps = [...filteredApps].sort((a, b) => a.name.localeCompare(b.name));
+      }
+      
+      return {
+        ...category,
+        apps: filteredApps
       };
     }).filter(category => category.apps.length > 0);
-  }, [searchQuery, dashboardData]);
+  }, [searchQuery, dashboardData, isAlphaSort]);
 
   if (loading) {
     return (
@@ -113,15 +125,37 @@ function App() {
           <span>{dashboardData?.title || 'Home Lab'}</span>
         </div>
         
-        <div className="search-container">
-          <Search size={18} className="search-icon" />
-          <input 
-            type="text" 
-            className="search-bar" 
-            placeholder="Search apps..." 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <button 
+            className={`icon-button ${isAlphaSort ? 'active' : ''}`}
+            onClick={() => setIsAlphaSort(!isAlphaSort)}
+            title="Toggle Alphabetical Sort"
+            style={{
+              background: isAlphaSort ? 'rgba(0, 240, 255, 0.1)' : 'transparent',
+              border: isAlphaSort ? '1px solid rgba(0, 240, 255, 0.3)' : '1px solid rgba(255,255,255,0.1)',
+              borderRadius: '8px',
+              padding: '8px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: isAlphaSort ? 'var(--accent-color)' : 'var(--text-secondary)',
+              transition: 'all 0.3s ease'
+            }}
+          >
+            <ArrowDownAZ size={18} />
+          </button>
+
+          <div className="search-container">
+            <Search size={18} className="search-icon" />
+            <input 
+              type="text" 
+              className="search-bar" 
+              placeholder="Search apps..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
         </div>
       </header>
 

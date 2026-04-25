@@ -1,0 +1,66 @@
+{
+  "title": "Haven Lab",
+  "categories": [
+    {
+      "name": "Jesus is Lord",
+      "apps": [
+        { "name": "Homarr Documentation", "url": "https://homarr.dev", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/homarr.png" },
+        { "name": "Bible Hub", "url": "https://biblehub.com/", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bible.png" },
+        { "name": "Kindle Library", "url": "https://read.amazon.com/kindle-library", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/kindle.png" },
+        { "name": "Play Library", "url": "https://play.google.com/books", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/google-play.png" }
+      ]
+    },
+    {
+      "name": "Apps",
+      "apps": [
+        { "name": "paperclip", "url": "https://homarr.dev", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/paperless-ngx.png" },
+        { "name": "Local AI", "url": "http://vengeance:8080", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/localai.png" },
+        { "name": "Immich", "url": "http://immich.lan.monkiesaresm.art/", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/immich.png" },
+        { "name": "paperless-webserver-1", "url": "https://paperless.lan.monkiesaresm.art", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/paperless-ngx.png" },
+        { "name": "n8", "url": "http://n8n:5678", "description": "Workflow Automation", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/n8n.png" },
+        { "name": "Home Assistant", "url": "http://homeassistant.haven:8123/onboarding.html", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/home-assistant.png" },
+        { "name": "Fooocus", "url": "http://vengeance:7860/", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/fooocus.png" },
+        { "name": "grafana", "url": "https://grafana.lan.monkiesaresm.art", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/grafana.png" },
+        { "name": "Clawdbot", "url": "https://clawd.monkiesaresm.art", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/robot.png" }
+      ]
+    },
+    {
+      "name": "SysAdmin",
+      "apps": [
+        { "name": "AdGuard Home", "url": "https://192.168.86.7", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/adguard-home.png" },
+        { "name": "smokeping", "url": "http://192.168.86.8/smokeping/", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/smokeping.png" },
+        { "name": "Proxmox", "url": "https://proxmox.haven:8006/", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/proxmox.png" },
+        { "name": "NPM", "url": "https://npm.lan.monkiesaresm.art/", "description": "Nginx Proxy Manager", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/nginx-proxy-manager.png" },
+        { "name": "UniFi Network", "url": "https://192.168.86.1/network/default/dashboard", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/unifi.png" },
+        { "name": "Portainer", "url": "https://portainer.haven:9443/#!/3/docker/containers", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/portainer.png" },
+        { "name": "PBS", "url": "https://pbs.haven:8007", "description": "Proxmox Backup Server", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/proxmox-backup-server.png" },
+        { "name": "uptime-kuma", "url": "http://192.168.86.19:3001/settings/docker-hosts", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/uptime-kuma.png" }
+      ]
+    },
+    {
+      "name": "GITHUB",
+      "apps": [
+        { "name": "paperclip-shortstory", "url": "https://github.com/kilrkrow/paperclip-shortstory", "description": "Paperclip-powered AI tabletop RPG", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "paperclip-shortstory-output", "url": "https://github.com/kilrkrow/paperclip-shortstory-output", "description": "Generated story output", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "foxanddoveconsulting-site", "url": "https://github.com/kilrkrow/foxanddoveconsulting-site", "description": "Fox and Dove Consulting website", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "foxanddoveconsulting", "url": "https://github.com/kilrkrow/foxanddoveconsulting", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "goodmob", "url": "https://github.com/kilrkrow/goodmob", "description": "Social-good app", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "trustbot-concept", "url": "https://github.com/kilrkrow/trustbot-concept", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "tennoshare", "url": "https://github.com/kilrkrow/tennoshare", "description": "Warframe resource sharing", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "museforge", "url": "https://github.com/kilrkrow/museforge", "description": "Self-hosted music video production suite", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "flowscript", "url": "https://github.com/kilrkrow/flowscript", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "homelab-stacks", "url": "https://github.com/kilrkrow/homelab-stacks", "description": "Haven homelab Docker Compose stacks", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "obsidian-bible-verse", "url": "https://github.com/kilrkrow/obsidian-bible-verse", "description": "Obsidian plugin for Bible verse lookup", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "worldview", "url": "https://github.com/kilrkrow/worldview", "description": "WORLDVIEW — Real-time global intelligence platform", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "netpulse", "url": "https://github.com/kilrkrow/netpulse", "description": "Bare-bones network diagnostic", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "voltdesk", "url": "https://github.com/kilrkrow/voltdesk", "description": "Windows desktop application", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "haven-daily-briefing", "url": "https://github.com/kilrkrow/haven-daily-briefing", "description": "Personal daily briefing dashboard", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "ollama-coach", "url": "https://github.com/kilrkrow/ollama-coach", "description": "Multi-platform coaching bot", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "cc-demo-utils", "url": "https://github.com/kilrkrow/cc-demo-utils", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "programmatic-document-creation", "url": "https://github.com/kilrkrow/programmatic-document-creation", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "ai.win.ollama", "url": "https://github.com/kilrkrow/ai.win.ollama", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" },
+        { "name": "local-ai-stack", "url": "https://github.com/kilrkrow/local-ai-stack", "description": "", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github-light.png" }
+      ]
+    }
+  ]
+}

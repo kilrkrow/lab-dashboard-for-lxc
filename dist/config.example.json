@@ -1,0 +1,31 @@
+{
+  "title": "My Home Lab",
+  "categories": [
+    {
+      "name": "Apps",
+      "apps": [
+        { "name": "Nextcloud", "url": "https://nextcloud.example.com", "description": "Personal cloud storage", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/nextcloud.png" },
+        { "name": "Immich", "url": "http://immich.local", "description": "Self-hosted photo backup", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/immich.png" },
+        { "name": "Bitwarden", "url": "https://vault.example.com", "description": "Password manager", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bitwarden.png" },
+        { "name": "Paperless-ngx", "url": "http://paperless.local", "description": "Document management", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/paperless-ngx.png" }
+      ]
+    },
+    {
+      "name": "Media",
+      "apps": [
+        { "name": "Jellyfin", "url": "http://jellyfin.local:8096", "description": "Media server", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/jellyfin.png" },
+        { "name": "Sonarr", "url": "http://sonarr.local:8989", "description": "TV show tracker", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/sonarr.png" },
+        { "name": "Radarr", "url": "http://radarr.local:7878", "description": "Movie tracker", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/radarr.png" }
+      ]
+    },
+    {
+      "name": "SysAdmin",
+      "apps": [
+        { "name": "Proxmox", "url": "https://proxmox.local:8006", "description": "Virtualization environment", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/proxmox.png" },
+        { "name": "Portainer", "url": "https://portainer.local:9443", "description": "Docker container management", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/portainer.png" },
+        { "name": "Pi-hole", "url": "http://pi.hole/admin", "description": "Network-wide ad blocker", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/pi-hole.png" },
+        { "name": "Grafana", "url": "http://grafana.local:3000", "description": "Metrics visualization", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/grafana.png" }
+      ]
+    }
+  ]
+}
