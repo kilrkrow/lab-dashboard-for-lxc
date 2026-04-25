@@ -99,6 +99,7 @@ function App() {
       .then(res => res.json())
       .then(data => {
         setDashboardData(data);
+        if (data.title) document.title = data.title;
         setLoading(false);
       })
       .catch(err => {
