@@ -43,24 +43,38 @@ If you add the `editConfigUrl` field to your config, a "Pencil" icon will appear
 ```json
 {
   "title": "My Home Lab",
-  "editConfigUrl": "https://github.com/YOUR_USERNAME/YOUR_PRIVATE_REPO/edit/main/config.json",
-  "categories": [
-    {
-      "name": "SysAdmin",
-      "apps": [
-        { 
-          "name": "Proxmox", 
-          "url": "https://192.168.1.100:8006", 
-          "description": "Hypervisor", 
-          "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/proxmox.png" 
-        }
-      ]
-    }
-  ]
+  "editConfigUrl": "https://github.com/YOUR_USERNAME/YOUR_PRIVATE_REPO/edit/main/config.json"
 }
 ```
 
-### Finding Icons
+## Advanced: Live "GitOps" Configuration via Nginx
+If you store your `config.json` in a private GitHub repository, you can configure your Nginx server to securely fetch the configuration live from GitHub every time the page loads. This means you **never** have to manually update or copy files to your server after editing your config!
+
+Simply add this `location` block to your Nginx configuration (usually `/etc/nginx/sites-available/default`) right above the standard `/` location block. Replace the GitHub URL and insert your Personal Access Token.
+
+```nginx
+server {
+    listen 80;
+    root /var/www/html;
+    index index.html;
+
+    # Intercept config.json and fetch securely from private GitHub repo
+    location = /config.json {
+        resolver 8.8.8.8;
+        proxy_pass https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_PRIVATE_REPO/main/config.json;
+        proxy_set_header Authorization "token YOUR_GITHUB_PAT";
+        proxy_hide_header Authorization;
+        proxy_ssl_server_name on;
+    }
+
+    # Serve the static React application normally
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+## Finding Icons
 This dashboard natively relies on the massive [walkxcode/dashboard-icons](https://github.com/walkxcode/dashboard-icons) collection. 
 Simply find the app you want in their repo, and use the raw CDN link:
 `https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/[icon-name].png`
