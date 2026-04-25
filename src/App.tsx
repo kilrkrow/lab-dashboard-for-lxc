@@ -1,6 +1,6 @@
 import { Search, Hexagon, ArrowDownAZ, Pencil } from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
-import './index.css';
+import './App.css';   // ← changed from index.css if you prefer
 
 export interface AppConfig {
   name: string;
@@ -26,7 +26,7 @@ function AppCard({ app }: { app: AppConfig }) {
   return (
     <a href={app.url} className="glass-card" target="_blank" rel="noopener noreferrer">
       <div className="app-icon">
-        {!imgError && typeof app.icon === 'string' ? (
+        {!imgError ? (
           <img 
             src={app.icon} 
             alt={app.name} 
@@ -34,7 +34,7 @@ function AppCard({ app }: { app: AppConfig }) {
             style={{ width: '28px', height: '28px', objectFit: 'contain' }}
           />
         ) : (
-          <span style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>
+          <span style={{ fontSize: '1.4rem', fontWeight: 'bold', opacity: 0.9 }}>
             {app.name.charAt(0).toUpperCase()}
           </span>
         )}
@@ -64,20 +64,8 @@ function CategorySection({ category, apps }: { category: string, apps: AppConfig
           className={`icon-button ${isAlphaSort ? 'active' : ''}`}
           onClick={() => setIsAlphaSort(!isAlphaSort)}
           title="Toggle Alphabetical Sort"
-          style={{
-            background: isAlphaSort ? 'rgba(0, 240, 255, 0.1)' : 'transparent',
-            border: isAlphaSort ? '1px solid rgba(0, 240, 255, 0.3)' : '1px solid rgba(255,255,255,0.05)',
-            borderRadius: '6px',
-            padding: '4px 8px',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: isAlphaSort ? 'var(--accent-color)' : 'var(--text-secondary)',
-            transition: 'all 0.3s ease'
-          }}
         >
-          <ArrowDownAZ size={16} />
+          <ArrowDownAZ size={18} />
         </button>
       </div>
       <div className="grid-container">
@@ -93,10 +81,14 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetch('/config.json')
-      .then(res => res.json())
+    fetch('/config.json', { cache: 'no-store' })   // helps with live GitOps updates
+      .then(res => {
+        if (!res.ok) throw new Error('Config not found');
+        return res.json();
+      })
       .then(data => {
         setDashboardData(data);
         if (data.title) document.title = data.title;
@@ -104,15 +96,15 @@ function App() {
       })
       .catch(err => {
         console.error("Failed to load config.json:", err);
+        setError(true);
         setLoading(false);
       });
   }, []);
 
-  // Filter apps based on search query
   const filteredConfig = useMemo(() => {
     if (!dashboardData) return [];
     
-    const query = searchQuery.toLowerCase();
+    const query = searchQuery.toLowerCase().trim();
     
     return dashboardData.categories.map(category => {
       let filteredApps = category.apps;
@@ -124,19 +116,20 @@ function App() {
         );
       }
       
-      return {
-        ...category,
-        apps: filteredApps
-      };
+      return { ...category, apps: filteredApps };
     }).filter(category => category.apps.length > 0);
   }, [searchQuery, dashboardData]);
 
   if (loading) {
-    return (
-      <div className="app-container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: 'var(--text-secondary)' }}>
-        Loading dashboard configuration...
-      </div>
-    );
+    return <div className="app-container" style={{height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)'}}>
+      Loading dashboard...
+    </div>;
+  }
+
+  if (error || !dashboardData) {
+    return <div className="app-container" style={{height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff6b6b', textAlign: 'center'}}>
+      Could not load config.json<br/>Make sure it exists in the public folder (or via Nginx proxy)
+    </div>;
   }
 
   return (
@@ -144,32 +137,13 @@ function App() {
       <header className="header glass-panel">
         <div className="header-title">
           <Hexagon size={28} color="var(--accent-color)" />
-          <span>{dashboardData?.title || 'Home Lab'}</span>
+          <span>{dashboardData.title || 'Home Lab'}</span>
         </div>
         
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          {dashboardData?.editConfigUrl && (
-            <a 
-              href={dashboardData.editConfigUrl} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              title="Edit Configuration"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '8px',
-                color: 'var(--text-secondary)',
-                border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '8px',
-                transition: 'all 0.3s ease',
-                cursor: 'pointer',
-                textDecoration: 'none'
-              }}
-              onMouseOver={(e) => { e.currentTarget.style.color = 'var(--accent-color)'; e.currentTarget.style.borderColor = 'rgba(0, 240, 255, 0.3)'; }}
-              onMouseOut={(e) => { e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
-            >
-              <Pencil size={18} />
+          {dashboardData.editConfigUrl && (
+            <a href={dashboardData.editConfigUrl} target="_blank" rel="noopener noreferrer" title="Edit Configuration" className="glass-panel" style={{padding: '10px', borderRadius: '10px', display: 'flex', alignItems: 'center'}}>
+              <Pencil size={19} />
             </a>
           )}
 
@@ -196,7 +170,7 @@ function App() {
             />
           ))
         ) : (
-          <div style={{ textAlign: 'center', marginTop: '4rem', color: 'var(--text-secondary)' }}>
+          <div style={{ textAlign: 'center', marginTop: '6rem', color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
             No applications found matching "{searchQuery}"
           </div>
         )}
