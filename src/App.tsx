@@ -1,6 +1,6 @@
 import { Search, Hexagon, ArrowDownAZ, Pencil } from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
-import './App.css';   // ← changed from index.css if you prefer
+import './App.css';
 
 export interface AppConfig {
   name: string;
@@ -18,6 +18,14 @@ interface DashboardData {
   title: string;
   editConfigUrl?: string;
   categories: CategoryConfig[];
+}
+
+interface GithubRepo {
+  name: string;
+  html_url: string;
+  description: string | null;
+  updated_at: string;
+  private: boolean;
 }
 
 function AppCard({ app }: { app: AppConfig }) {
@@ -77,14 +85,66 @@ function CategorySection({ category, apps }: { category: string, apps: AppConfig
   );
 }
 
+function GitHubReposSection({ repos, searchQuery }: { repos: GithubRepo[], searchQuery: string }) {
+  const [sortByDate, setSortByDate] = useState(true);
+
+  const displayedRepos = useMemo(() => {
+    let filtered = repos;
+    const query = searchQuery.toLowerCase().trim();
+    if (query) {
+      filtered = repos.filter(r =>
+        r.name.toLowerCase().includes(query) ||
+        (r.description && r.description.toLowerCase().includes(query))
+      );
+    }
+    return sortByDate
+      ? [...filtered].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+      : [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  }, [repos, searchQuery, sortByDate]);
+
+  if (displayedRepos.length === 0) return null;
+
+  return (
+    <section className="category-section">
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+        <h2 className="category-title" style={{ marginBottom: 0 }}>GitHub Repos</h2>
+        <button
+          className={`icon-button ${sortByDate ? '' : 'active'}`}
+          onClick={() => setSortByDate(!sortByDate)}
+          title={sortByDate ? "Sorted by newest — click for alphabetical" : "Sorted alphabetically — click by newest"}
+        >
+          <ArrowDownAZ size={18} />
+        </button>
+      </div>
+      <div className="grid-container">
+        {displayedRepos.map(repo => (
+          <a key={repo.name} href={repo.html_url} className="glass-card" target="_blank" rel="noopener noreferrer">
+            <div className="app-icon">
+              <span style={{ fontSize: '1.4rem', fontWeight: 'bold', opacity: 0.9 }}>
+                {repo.name.charAt(0).toUpperCase()}
+              </span>
+            </div>
+            <div className="app-info">
+              <span className="app-title">{repo.name}</span>
+              {repo.description && <span className="app-desc">{repo.description}</span>}
+              {!repo.description && repo.private && <span className="app-desc" style={{ fontStyle: 'italic', opacity: 0.5 }}>Private repository</span>}
+            </div>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
+  const [repos, setRepos] = useState<GithubRepo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetch('/config.json', { cache: 'no-store' })   // helps with live GitOps updates
+    fetch('/config.json', { cache: 'no-store' })
       .then(res => {
         if (!res.ok) throw new Error('Config not found');
         return res.json();
@@ -101,21 +161,31 @@ function App() {
       });
   }, []);
 
+  useEffect(() => {
+    fetch('/api/repos', { cache: 'no-store' })
+      .then(res => {
+        if (!res.ok) throw new Error('Repos API failed');
+        return res.json();
+      })
+      .then(data => setRepos(data as GithubRepo[]))
+      .catch(err => console.warn("Failed to load GitHub repos:", err));
+  }, []);
+
   const filteredConfig = useMemo(() => {
     if (!dashboardData) return [];
-    
+
     const query = searchQuery.toLowerCase().trim();
-    
+
     return dashboardData.categories.map(category => {
       let filteredApps = category.apps;
-      
+
       if (query) {
-        filteredApps = filteredApps.filter(app => 
-          app.name.toLowerCase().includes(query) || 
+        filteredApps = filteredApps.filter(app =>
+          app.name.toLowerCase().includes(query) ||
           (app.description && app.description.toLowerCase().includes(query))
         );
       }
-      
+
       return { ...category, apps: filteredApps };
     }).filter(category => category.apps.length > 0);
   }, [searchQuery, dashboardData]);
@@ -161,14 +231,17 @@ function App() {
       </header>
 
       <main>
-        {filteredConfig.length > 0 ? (
-          filteredConfig.map((category, idx) => (
-            <CategorySection 
-              key={idx} 
-              category={category.name} 
-              apps={category.apps} 
-            />
-          ))
+        {filteredConfig.length > 0 || repos.length > 0 ? (
+          <>
+            {filteredConfig.map((category, idx) => (
+              <CategorySection
+                key={idx}
+                category={category.name}
+                apps={category.apps}
+              />
+            ))}
+            <GitHubReposSection repos={repos} searchQuery={searchQuery} />
+          </>
         ) : (
           <div style={{ textAlign: 'center', marginTop: '6rem', color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
             No applications found matching "{searchQuery}"
