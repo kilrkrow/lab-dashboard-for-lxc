@@ -1,31 +1,36 @@
 {
-  "title": "My Home Lab",
-  "editConfigUrl": "https://github.com/username/my-repo/edit/main/config.json",
+  "title": "Haven Lab",
+  "editConfigUrl": "https://github.com/kilrkrow/homelab-stacks/edit/main/dashboard/config.json",
   "categories": [
     {
-      "name": "Apps",
+      "name": "Jesus is Lord",
+      "faith": true,
       "apps": [
-        { "name": "Nextcloud", "url": "https://nextcloud.example.com", "description": "Personal cloud storage", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/nextcloud.png" },
-        { "name": "Immich", "url": "http://immich.local", "description": "Self-hosted photo backup", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/immich.png" },
-        { "name": "Bitwarden", "url": "https://vault.example.com", "description": "Password manager", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bitwarden.png" },
-        { "name": "Paperless-ngx", "url": "http://paperless.local", "description": "Document management", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/paperless-ngx.png" }
+        { "name": "Bible Hub", "url": "https://biblehub.com", "description": "Study & cross-reference", "icon": null },
+        { "name": "Kindle Library", "url": "https://read.amazon.com", "description": "Reading list", "icon": "amazon" },
+        { "name": "Play Library", "url": "https://play.google.com/books", "description": "Audiobooks", "icon": "google-play" }
       ]
     },
     {
-      "name": "Media",
+      "name": "Apps",
       "apps": [
-        { "name": "Jellyfin", "url": "http://jellyfin.local:8096", "description": "Media server", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/jellyfin.png" },
-        { "name": "Sonarr", "url": "http://sonarr.local:8989", "description": "TV show tracker", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/sonarr.png" },
-        { "name": "Radarr", "url": "http://radarr.local:7878", "description": "Movie tracker", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/radarr.png" }
+        { "name": "n8n", "url": "http://n8n.haven", "description": "Workflow automation", "icon": "n8n" },
+        { "name": "Home Assistant", "url": "http://hass.haven", "description": "Home automation", "icon": "home-assistant" },
+        { "name": "Grafana", "url": "http://grafana.haven", "description": "Metrics", "icon": "grafana", "grafana": true },
+        { "name": "paperless", "url": "http://paperless.haven", "description": "Document management", "icon": "paperless-ngx" }
       ]
     },
     {
       "name": "SysAdmin",
+      "svc": true,
       "apps": [
-        { "name": "Proxmox", "url": "https://proxmox.local:8006", "description": "Virtualization environment", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/proxmox.png" },
-        { "name": "Portainer", "url": "https://portainer.local:9443", "description": "Docker container management", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/portainer.png" },
-        { "name": "Pi-hole", "url": "http://pi.hole/admin", "description": "Network-wide ad blocker", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/pi-hole.png" },
-        { "name": "Grafana", "url": "http://grafana.local:3000", "description": "Metrics visualization", "icon": "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/grafana.png" }
+        { "name": "AdGuard Home", "url": "http://adguard.haven", "description": "DNS ad-blocker", "icon": "adguard-home" },
+        { "name": "Proxmox", "url": "https://pve.haven:8006", "description": "Virtualization", "icon": "proxmox" },
+        { "name": "UniFi Network", "url": "https://unifi.haven", "description": "DR7 controller", "icon": "unifi" },
+        { "name": "Portainer", "url": "https://portainer.haven:9443", "description": "Docker management", "icon": "portainer" },
+        { "name": "PBS", "url": "https://pbs.haven:8007", "description": "Proxmox Backup Server", "icon": "proxmox-backup-server" },
+        { "name": "uptime-kuma", "url": "http://kuma.haven", "description": "Monitors", "icon": "uptime-kuma" },
+        { "name": "cloudflare", "url": "https://dash.cloudflare.com", "description": "Tunnel / DNS (WAN)", "icon": "cloudflare", "wan": true }
       ]
     }
   ]
