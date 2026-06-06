@@ -74,6 +74,47 @@ server {
 }
 ```
 
+## Recommended Authentication Practices
+
+The examples above use a Personal Access Token (PAT) for simplicity. For better security:
+
+- Use **fine-grained PATs** with the minimum scopes required (e.g. "Contents: Read" for the private config repo + "Metadata: Read").
+- Prefer **SSH deploy keys** or `gh auth login` for git operations in `publish.ps1` and on the LXC instead of embedding tokens in HTTPS remotes.
+- Store the PAT for Nginx in an environment variable or secret manager rather than hard-coding in the site config file.
+- Rotate tokens regularly.
+
+### Nginx Proxy for Dynamic GitHub Repos (`/api/repos`)
+
+If you use the dynamic "GitHub Repos" section (fetched via `/api/repos`), add a similar location block:
+
+```nginx
+location = /api/repos {
+    resolver 8.8.8.8;
+    proxy_pass https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,organization_member;
+    proxy_set_header Authorization "token YOUR_GITHUB_PAT";
+    proxy_hide_header Authorization;
+    proxy_ssl_server_name on;
+}
+```
+
+### Development Proxy (Vite)
+
+For `npm run dev`, configure proxies in `vite.config.ts` (see the file for an example). This keeps the same paths in dev and prod.
+
+## LXC Update Script Example
+
+Create an `update.sh` (or equivalent) on the LXC:
+
+```bash
+#!/bin/bash
+set -e
+cd /var/www/html
+git pull --ff-only origin main
+# Optional: chown -R www-data:www-data . if needed
+```
+
+Make executable (`chmod +x update.sh`) and run it after each publish from your dev machine.
+
 ## Finding Icons
 This dashboard natively relies on the massive [walkxcode/dashboard-icons](https://github.com/walkxcode/dashboard-icons) collection. 
 Simply find the app you want in their repo, and use the raw CDN link:
