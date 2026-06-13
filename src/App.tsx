@@ -417,12 +417,16 @@ function CategoryEditor({ cat, onChange, onDelete, onMoveUp, onMoveDown, isFirst
   );
 }
 
+type SyncState = 'idle' | 'pushing' | 'ok' | 'err';
+
 function ConfigEditor({ cfg, onSave, onClose }: { cfg: DashConfig; onSave: (c: DashConfig) => void; onClose: () => void }) {
   const [draft, setDraft] = useState<DashConfig>(() => JSON.parse(JSON.stringify(cfg)));
   const [saved, setSaved] = useState(false);
   const [jsonView, setJsonView] = useState(false);
   const [jsonText, setJsonText] = useState('');
   const [jsonErr, setJsonErr] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<SyncState>('idle');
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const updateCat = (i: number, cat: Category) => {
     const categories = [...draft.categories]; categories[i] = cat; setDraft({ ...draft, categories });
@@ -439,6 +443,32 @@ function ConfigEditor({ cfg, onSave, onClose }: { cfg: DashConfig; onSave: (c: D
     onSave(draft);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleSyncToGitHub = async () => {
+    setSyncState('pushing');
+    setSyncMsg(null);
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(draft, null, 2),
+      });
+      const j: { ok: boolean; message: string } = await res.json();
+      if (j.ok) {
+        setSyncState('ok');
+        setSyncMsg(j.message);
+        // Also apply locally
+        onSave(draft);
+      } else {
+        setSyncState('err');
+        setSyncMsg(j.message);
+      }
+    } catch (err) {
+      setSyncState('err');
+      setSyncMsg(String(err));
+    }
+    setTimeout(() => setSyncState('idle'), 6000);
   };
 
   const openJsonView = () => { setJsonText(JSON.stringify(draft, null, 2)); setJsonErr(null); setJsonView(true); };
@@ -499,10 +529,30 @@ function ConfigEditor({ cfg, onSave, onClose }: { cfg: DashConfig; onSave: (c: D
         )}
 
         <div className="cfg-modal-foot">
-          <span className="cfg-foot-note">Changes apply in-session only. Use the JSON view to copy &amp; save to your config.json.</span>
-          <button className={'cfg-save-btn' + (saved ? ' saved' : '')} onClick={handleSave}>
-            {saved ? <><Check size={14} /> Saved</> : 'Apply'}
-          </button>
+          <div className="cfg-foot-left">
+            <span className="cfg-foot-note">Apply = in-session only. Save to GitHub = writes to repo &amp; disk.</span>
+            {syncMsg && (
+              <span className={'cfg-sync-msg' + (syncState === 'ok' ? ' ok' : syncState === 'err' ? ' err' : '')}>
+                {syncMsg}
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: '.5rem' }}>
+            <button className={'cfg-save-btn secondary' + (saved ? ' saved' : '')} onClick={handleSave}>
+              {saved ? <><Check size={14} /> Applied</> : 'Apply'}
+            </button>
+            <button
+              className={'cfg-save-btn gh-sync' + (syncState === 'pushing' ? ' pushing' : syncState === 'ok' ? ' saved' : syncState === 'err' ? ' err' : '')}
+              onClick={handleSyncToGitHub}
+              disabled={syncState === 'pushing'}
+            >
+              {syncState === 'pushing'
+                ? <><RefreshCw size={14} className="spin-icon" /> Saving…</>
+                : syncState === 'ok'
+                  ? <><Check size={14} /> Saved to GitHub</>
+                  : <><span style={{ fontSize: '1em' }}>↑</span> Save to GitHub</>}
+            </button>
+          </div>
         </div>
       </div>
     </div>

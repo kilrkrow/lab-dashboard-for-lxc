@@ -201,3 +201,19 @@
   .cfg-json-textarea{flex:1;min-height:360px;background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:10px;color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:.78rem;padding:.8rem 1rem;resize:vertical;outline:none;transition:.18s;line-height:1.55}
   .cfg-json-textarea:focus{border-color:var(--border-hi)}
   .cfg-json-err{font-size:.76rem;color:var(--bad);padding:.3rem .5rem;background:rgba(255,93,108,.08);border-radius:6px}
+
+  /* ---- Config editor: GitHub sync additions ---- */
+  .cfg-modal-foot{flex-wrap:wrap;gap:.5rem}
+  .cfg-foot-left{display:flex;flex-direction:column;gap:.3rem;flex:1;min-width:0}
+  .cfg-sync-msg{font-size:.72rem;color:var(--t2);word-break:break-word}
+  .cfg-sync-msg.ok{color:var(--ok)}
+  .cfg-sync-msg.err{color:var(--bad)}
+  .cfg-save-btn.secondary{background:rgba(255,255,255,.08);color:var(--t1);border:1px solid var(--border)}
+  .cfg-save-btn.secondary:hover{background:rgba(255,255,255,.14)}
+  .cfg-save-btn.secondary.saved{background:rgba(46,230,166,.15);color:var(--ok);border-color:rgba(46,230,166,.4)}
+  .cfg-save-btn.gh-sync{background:linear-gradient(135deg,#238636,#2ea043)}
+  .cfg-save-btn.gh-sync:hover:not(:disabled){filter:brightness(1.15)}
+  .cfg-save-btn.gh-sync.pushing{opacity:.7;cursor:wait}
+  .cfg-save-btn.gh-sync.saved{background:var(--ok);color:#04141a}
+  .cfg-save-btn.gh-sync.err{background:rgba(255,93,108,.2);color:var(--bad);border:1px solid rgba(255,93,108,.4)}
+  .spin-icon{animation:spin .7s linear infinite}

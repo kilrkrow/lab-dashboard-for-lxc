@@ -435,6 +435,98 @@ async function fetchAdguard(): Promise<Envelope<object>> {
   }
 }
 
+// ─── /api/config — save config.json locally + push to GitHub ────────────────
+// Parses the editConfigUrl field from the on-disk config.json to determine
+// which GitHub owner/repo/branch/path to write back to.  Uses the same
+// GITHUB_TOKEN that fetchRepos already relies on.
+//
+// editConfigUrl pattern:
+//   https://github.com/<owner>/<repo>/edit/<branch>/<path...>
+//   https://github.com/<owner>/<repo>/blob/<branch>/<path...>  (also accepted)
+
+function parseEditConfigUrl(editConfigUrl: string): { owner: string; repo: string; branch: string; filePath: string } | null {
+  try {
+    const u = new URL(editConfigUrl);
+    if (u.hostname !== 'github.com') return null;
+    // /owner/repo/(edit|blob)/branch/path...
+    const parts = u.pathname.replace(/^\//, '').split('/');
+    if (parts.length < 5) return null;
+    const [owner, repo, _verb, branch, ...rest] = parts;
+    return { owner, repo, branch, filePath: rest.join('/') };
+  } catch { return null; }
+}
+
+async function pushConfigToGithub(newConfig: unknown): Promise<{ ok: boolean; message: string }> {
+  if (!GH_TOKEN) return { ok: false, message: 'GITHUB_TOKEN not set in broker env' };
+
+  // Read editConfigUrl from the on-disk config
+  let editConfigUrl: string | undefined;
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const cfg = parseJson<{ editConfigUrl?: string }>(raw);
+    editConfigUrl = cfg?.editConfigUrl;
+  } catch (err) {
+    return { ok: false, message: `Could not read local config.json: ${err}` };
+  }
+
+  if (!editConfigUrl) return { ok: false, message: 'editConfigUrl not set in config.json — cannot determine target repo/path' };
+
+  const coords = parseEditConfigUrl(editConfigUrl);
+  if (!coords) return { ok: false, message: `Could not parse editConfigUrl: ${editConfigUrl}` };
+
+  const { owner, repo, branch, filePath } = coords;
+  const ghHeaders = {
+    authorization: `Bearer ${GH_TOKEN}`,
+    'user-agent': 'haven-lab-broker/1.0',
+    accept: 'application/vnd.github+json',
+    'x-github-api-version': '2022-11-28',
+    'content-type': 'application/json',
+  };
+  const contentsUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`;
+
+  // Step 1: GET current file SHA (required for update)
+  let sha: string;
+  try {
+    const getRes = await rawFetch(contentsUrl, { headers: ghHeaders });
+    if (getRes.status === 404) {
+      // File doesn't exist yet — create it (sha not needed)
+      sha = '';
+    } else if (getRes.status !== 200) {
+      return { ok: false, message: `GitHub GET failed (${getRes.status}): ${getRes.body.slice(0, 200)}` };
+    } else {
+      const meta = parseJson<{ sha: string }>(getRes.body);
+      sha = meta?.sha ?? '';
+    }
+  } catch (err) {
+    return { ok: false, message: `GitHub GET error: ${err}` };
+  }
+
+  // Step 2: PUT new content (base64)
+  const content = Buffer.from(JSON.stringify(newConfig, null, 2) + '\n').toString('base64');
+  const putBody: Record<string, string> = {
+    message: 'chore: update dashboard config via Haven Lab editor',
+    content,
+    branch,
+  };
+  if (sha) putBody.sha = sha;
+
+  try {
+    const putRes = await rawFetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
+      method: 'PUT',
+      headers: ghHeaders,
+      body: JSON.stringify(putBody),
+    });
+    if (putRes.status === 200 || putRes.status === 201) {
+      // Also write locally so /config.json stays in sync
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(newConfig, null, 2) + '\n', 'utf8');
+      return { ok: true, message: `Saved to ${owner}/${repo}:${branch}/${filePath}` };
+    }
+    return { ok: false, message: `GitHub PUT failed (${putRes.status}): ${putRes.body.slice(0, 300)}` };
+  } catch (err) {
+    return { ok: false, message: `GitHub PUT error: ${err}` };
+  }
+}
+
 // ─── static file helpers ──────────────────────────────────────────────────────
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
@@ -453,11 +545,28 @@ const server = http.createServer(async (req, res) => {
     res.end(body);
   };
 
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,PUT,OPTIONS', 'access-control-allow-headers': 'content-type' });
+    return res.end();
+  }
+
   try {
     if (pathname === '/api/dr7')      return json(await fetchDr7());
     if (pathname === '/api/repos')    return json(await fetchRepos());
     if (pathname === '/api/proxmox')  return json(await fetchProxmox());
     if (pathname === '/api/adguard')  return json(await fetchAdguard());
+
+    // PUT /api/config — save edited config to disk + push to GitHub
+    if (pathname === '/api/config' && req.method === 'PUT') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const body = Buffer.concat(chunks).toString('utf8');
+      const newConfig = parseJson<unknown>(body);
+      if (!newConfig) return json({ ok: false, message: 'Invalid JSON body' }, 400);
+      const result = await pushConfigToGithub(newConfig);
+      return json(result, result.ok ? 200 : 502);
+    }
 
     if (pathname === '/config.json') {
       try {
