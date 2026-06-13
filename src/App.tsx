@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Hexagon, Pencil, Zap, ArrowDownAZ, Lock } from 'lucide-react';
+import { Search, Hexagon, Pencil, Zap, ArrowDownAZ, Lock, RefreshCw, Plus, Trash2, X, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { getEnvelope } from './api';
 import type { Repo, Dr7, Proxmox, Adguard, Envelope } from './api';
 import './App.css';
@@ -10,7 +10,7 @@ interface Category { name: string; faith?: boolean; svc?: boolean; apps: AppItem
 interface DashConfig { title: string; editConfigUrl?: string; categories: Category[]; }
 
 // Accept a full URL or root-relative path as-is; otherwise treat it as a dashboard-icons slug.
-const ICON = (s: string) => /^(https?:|\/)/.test(s) ? s : `https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/${s}.png`;
+const ICON = (s: string) => /^(https?:|\/|data:)/.test(s) ? s : `https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/${s}.png`;
 const LANG_COLOR: Record<string, string> = { TypeScript: '#3178c6', Python: '#3572A5', 'C#': '#178600', JavaScript: '#f1e05a', Shell: '#89e051' };
 const LAT = 44.6587, LON = -123.84;
 
@@ -62,13 +62,15 @@ function DualSpark({ down, up }: { down: number[]; up: number[] }) {
   return <canvas ref={ref} className="dr7-spark" />;
 }
 
-/* ---------- header clock ---------- */
+/* ---------- header clock — 24h military time ---------- */
 function Clock() {
   const [now, setNow] = useState(new Date());
   useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id); }, []);
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
   return (
     <div className="clock">
-      <div className="t">{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+      <div className="t">{hh}:{mm}</div>
       <div className="d">{now.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
     </div>
   );
@@ -129,7 +131,6 @@ function Dr7Module({ env }: { env: Envelope<Dr7> | null }) {
   const d = env?.data;
   const hist = useRef<{ down: number[]; up: number[]; ts: number | null }>({ down: [], up: [], ts: null });
   if (d && env?.ts !== hist.current.ts) {
-    // only advance the sparkline on a genuinely new poll, not on unrelated re-renders
     hist.current.ts = env?.ts ?? Date.now();
     hist.current.down = [...hist.current.down, d.wan.down_mbps].slice(-44);
     hist.current.up = [...hist.current.up, d.wan.up_mbps].slice(-44);
@@ -210,23 +211,57 @@ function AppTile({ app, svc, grafanaData, wanDown }: { app: AppItem; svc?: boole
   );
 }
 
-/* ---------- GitHub section ---------- */
-function GithubSection({ env }: { env: Envelope<Repo[]> | null }) {
+/* ---------- GitHub section with refresh button ---------- */
+function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRefresh: () => void }) {
   const [alpha, setAlpha] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const repos = env?.data || [];
   const stale = !!env?.stale && repos.length > 0;
   const isNew = (iso: string) => (Date.now() - new Date(iso).getTime()) / 86400000 <= 7;
   const ago = (iso: string) => { const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000); return d <= 0 ? 'today' : d === 1 ? '1d ago' : d < 30 ? d + 'd ago' : Math.floor(d / 30) + 'mo ago'; };
   const rows = useMemo(() => [...repos].sort((a, b) => alpha ? a.name.localeCompare(b.name) : +new Date(b.pushed_at) - +new Date(a.pushed_at)), [repos, alpha]);
   const totalIssues = repos.reduce((s, r) => s + (r.open_issues || 0), 0);
-  if (!repos.length) return null;
+
+  // Track when env updates (successful refresh)
+  const prevTs = useRef<number | null>(null);
+  useEffect(() => {
+    if (env?.ts != null && env.ts !== prevTs.current) {
+      prevTs.current = env.ts;
+      if (refreshing) { setRefreshing(false); setLastRefreshed(new Date()); }
+    }
+  }, [env?.ts, refreshing]);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    onRefresh();
+    // Safety timeout — clear spinner if broker never responds
+    setTimeout(() => setRefreshing(false), 15000);
+  }, [onRefresh]);
+
+  const refreshedLabel = lastRefreshed
+    ? `refreshed ${lastRefreshed.getHours().toString().padStart(2,'0')}:${lastRefreshed.getMinutes().toString().padStart(2,'0')}`
+    : env?.ts ? `as of ${new Date(env.ts).getHours().toString().padStart(2,'0')}:${new Date(env.ts).getMinutes().toString().padStart(2,'0')}` : null;
+
+  if (!repos.length && !refreshing) return null;
   return (
     <section className="cat">
       <div className="cat-head">
         <div className="cat-title">GitHub</div>
         <div className="cat-meta">{repos.length} repos · <span style={{ color: 'var(--warn)' }}>{totalIssues} open issues</span></div>
         {stale && <span className="badge-off" style={{ display: 'inline-flex' }}>offline · cached {env?.ts ? ago(new Date(env.ts).toISOString()) : ''}</span>}
-        <div className="ic-btn"><button className={'sortbtn' + (alpha ? ' active' : '')} onClick={() => setAlpha((a) => !a)}><ArrowDownAZ size={16} /> {alpha ? 'A–Z' : 'Recent'}</button></div>
+        <div className="ic-btn" style={{ display: 'flex', gap: '.4rem', alignItems: 'center' }}>
+          {refreshedLabel && !refreshing && <span className="gh-refresh-ts">{refreshedLabel}</span>}
+          <button
+            className={'pill-btn gh-refresh' + (refreshing ? ' spinning' : '')}
+            onClick={handleRefresh}
+            title="Refresh repos"
+            disabled={refreshing}
+          >
+            <RefreshCw size={14} />
+          </button>
+          <button className={'sortbtn' + (alpha ? ' active' : '')} onClick={() => setAlpha((a) => !a)}><ArrowDownAZ size={16} /> {alpha ? 'A–Z' : 'Recent'}</button>
+        </div>
       </div>
       <div className="grid" style={stale ? { opacity: 0.6, filter: 'saturate(.5)' } : undefined}>
         {rows.map((r) => (
@@ -266,10 +301,10 @@ function CommandPalette({ index }: { index: CmdItem[] }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const results: CmdItem[] = useMemo(() => {
     const tr = q.trim(); const bm = tr.match(/^(![a-z]+)\s*(.*)$/i);
-    if (bm && BANGS[bm[1].toLowerCase()]) { const b = BANGS[bm[1].toLowerCase()]; const term = (bm[2] || '').trim(); return [{ type: 'web', label: term ? `Search ${b.n} for “${term}”` : `Search ${b.n}…`, sub: 'press Enter', url: b.u(encodeURIComponent(term || ' ')), tag: b.n }]; }
+    if (bm && BANGS[bm[1].toLowerCase()]) { const b = BANGS[bm[1].toLowerCase()]; const term = (bm[2] || '').trim(); return [{ type: 'web', label: term ? `Search ${b.n} for "${term}"` : `Search ${b.n}…`, sub: 'press Enter', url: b.u(encodeURIComponent(term || ' ')), tag: b.n }]; }
     const ql = tr.toLowerCase();
     const base = ql ? index.filter((x) => x.label.toLowerCase().includes(ql) || x.sub.toLowerCase().includes(ql)).slice(0, 8) : index.slice(0, 7);
-    if (ql) base.push({ type: 'web', label: `Search Google for “${tr}”`, sub: 'press Enter', url: 'https://www.google.com/search?q=' + encodeURIComponent(tr), tag: 'web' });
+    if (ql) base.push({ type: 'web', label: `Search Google for "${tr}"`, sub: 'press Enter', url: 'https://www.google.com/search?q=' + encodeURIComponent(tr), tag: 'web' });
     return base;
   }, [q, index]);
   useEffect(() => { setSel(0); }, [q]);
@@ -308,15 +343,198 @@ function CommandPalette({ index }: { index: CmdItem[] }) {
   );
 }
 
+/* ===================== CONFIG EDITOR MODAL ===================== */
+
+function AppEditor({ app, onChange, onDelete }: {
+  app: AppItem;
+  onChange: (a: AppItem) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="cfg-app-row">
+      <input className="cfg-input" value={app.name} placeholder="Name" onChange={e => onChange({ ...app, name: e.target.value })} />
+      <input className="cfg-input cfg-url" value={app.url} placeholder="URL" onChange={e => onChange({ ...app, url: e.target.value })} />
+      <input className="cfg-input" value={app.description ?? ''} placeholder="Description" onChange={e => onChange({ ...app, description: e.target.value })} />
+      <input className="cfg-input cfg-icon" value={app.icon ?? ''} placeholder="Icon slug or URL" onChange={e => onChange({ ...app, icon: e.target.value || null })} />
+      <button className="cfg-del-btn" title="Remove app" onClick={onDelete}><Trash2 size={14} /></button>
+    </div>
+  );
+}
+
+function CategoryEditor({ cat, onChange, onDelete, onMoveUp, onMoveDown, isFirst, isLast }: {
+  cat: Category;
+  onChange: (c: Category) => void;
+  onDelete: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  isFirst: boolean;
+  isLast: boolean;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const addApp = () => onChange({ ...cat, apps: [...cat.apps, { name: 'New App', url: '#', description: '' }] });
+  return (
+    <div className="cfg-cat">
+      <div className="cfg-cat-head">
+        <button className="cfg-collapse-btn" onClick={() => setCollapsed(c => !c)}>
+          {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+        </button>
+        <input
+          className="cfg-input cfg-cat-name"
+          value={cat.name}
+          placeholder="Category name"
+          onChange={e => onChange({ ...cat, name: e.target.value })}
+        />
+        <label className="cfg-check-label" title="Faith category">
+          <input type="checkbox" checked={!!cat.faith} onChange={e => onChange({ ...cat, faith: e.target.checked || undefined })} /> faith
+        </label>
+        <label className="cfg-check-label" title="Service category (shows status dot)">
+          <input type="checkbox" checked={!!cat.svc} onChange={e => onChange({ ...cat, svc: e.target.checked || undefined })} /> svc
+        </label>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '.3rem' }}>
+          <button className="cfg-move-btn" onClick={onMoveUp} disabled={isFirst} title="Move up">↑</button>
+          <button className="cfg-move-btn" onClick={onMoveDown} disabled={isLast} title="Move down">↓</button>
+          <button className="cfg-del-btn" onClick={onDelete} title="Delete category"><Trash2 size={14} /></button>
+        </div>
+      </div>
+      {!collapsed && (
+        <>
+          {cat.apps.map((app, i) => (
+            <AppEditor
+              key={i}
+              app={app}
+              onChange={updated => {
+                const apps = [...cat.apps]; apps[i] = updated; onChange({ ...cat, apps });
+              }}
+              onDelete={() => {
+                const apps = cat.apps.filter((_, j) => j !== i); onChange({ ...cat, apps });
+              }}
+            />
+          ))}
+          <button className="cfg-add-btn" onClick={addApp}><Plus size={13} /> Add app</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ConfigEditor({ cfg, onSave, onClose }: { cfg: DashConfig; onSave: (c: DashConfig) => void; onClose: () => void }) {
+  const [draft, setDraft] = useState<DashConfig>(() => JSON.parse(JSON.stringify(cfg)));
+  const [saved, setSaved] = useState(false);
+  const [jsonView, setJsonView] = useState(false);
+  const [jsonText, setJsonText] = useState('');
+  const [jsonErr, setJsonErr] = useState<string | null>(null);
+
+  const updateCat = (i: number, cat: Category) => {
+    const categories = [...draft.categories]; categories[i] = cat; setDraft({ ...draft, categories });
+  };
+  const deleteCat = (i: number) => setDraft({ ...draft, categories: draft.categories.filter((_, j) => j !== i) });
+  const moveCat = (i: number, dir: -1 | 1) => {
+    const cats = [...draft.categories];
+    const j = i + dir; if (j < 0 || j >= cats.length) return;
+    [cats[i], cats[j]] = [cats[j], cats[i]]; setDraft({ ...draft, categories: cats });
+  };
+  const addCat = () => setDraft({ ...draft, categories: [...draft.categories, { name: 'New Category', apps: [] }] });
+
+  const handleSave = () => {
+    onSave(draft);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const openJsonView = () => { setJsonText(JSON.stringify(draft, null, 2)); setJsonErr(null); setJsonView(true); };
+  const applyJson = () => {
+    try { const parsed = JSON.parse(jsonText); setDraft(parsed); setJsonView(false); setJsonErr(null); }
+    catch (e) { setJsonErr(String(e)); }
+  };
+
+  return (
+    <div className="cfg-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="cfg-modal glass">
+        <div className="cfg-modal-head">
+          <span className="cfg-modal-title">Edit Dashboard Config</span>
+          <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+            <button className="cfg-json-btn" onClick={jsonView ? () => setJsonView(false) : openJsonView}>
+              {jsonView ? 'Visual' : 'JSON'}
+            </button>
+            <button className="pill-btn" onClick={onClose}><X size={15} /></button>
+          </div>
+        </div>
+
+        {jsonView ? (
+          <div className="cfg-json-wrap">
+            <textarea
+              className="cfg-json-textarea"
+              value={jsonText}
+              onChange={e => { setJsonText(e.target.value); setJsonErr(null); }}
+              spellCheck={false}
+            />
+            {jsonErr && <div className="cfg-json-err">{jsonErr}</div>}
+            <button className="cfg-save-btn" onClick={applyJson}>Apply JSON</button>
+          </div>
+        ) : (
+          <div className="cfg-body">
+            <div className="cfg-row">
+              <label className="cfg-label">Dashboard title</label>
+              <input className="cfg-input" value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} />
+            </div>
+            <div className="cfg-row">
+              <label className="cfg-label">Edit config URL</label>
+              <input className="cfg-input cfg-url" value={draft.editConfigUrl ?? ''} placeholder="https://github.com/…/edit/main/config.json" onChange={e => setDraft({ ...draft, editConfigUrl: e.target.value || undefined })} />
+            </div>
+            <div className="cfg-section-head">Categories</div>
+            {draft.categories.map((cat, i) => (
+              <CategoryEditor
+                key={i}
+                cat={cat}
+                onChange={c => updateCat(i, c)}
+                onDelete={() => deleteCat(i)}
+                onMoveUp={() => moveCat(i, -1)}
+                onMoveDown={() => moveCat(i, 1)}
+                isFirst={i === 0}
+                isLast={i === draft.categories.length - 1}
+              />
+            ))}
+            <button className="cfg-add-btn cfg-add-cat" onClick={addCat}><Plus size={13} /> Add category</button>
+          </div>
+        )}
+
+        <div className="cfg-modal-foot">
+          <span className="cfg-foot-note">Changes apply in-session only. Use the JSON view to copy &amp; save to your config.json.</span>
+          <button className={'cfg-save-btn' + (saved ? ' saved' : '')} onClick={handleSave}>
+            {saved ? <><Check size={14} /> Saved</> : 'Apply'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ===================== APP ===================== */
 export default function App() {
   const [cfg, setCfg] = useState<DashConfig | null>(null);
   const [cfgErr, setCfgErr] = useState(false);
-  const repos = usePoll<Repo[]>('/api/repos', 5 * 60 * 1000);
+  const [cfgEditorOpen, setCfgEditorOpen] = useState(false);
+
+  // Manual refresh trigger for GitHub
+  const [repoRefreshKey, setRepoRefreshKey] = useState(0);
+  const [repos, setRepos] = useState<Envelope<Repo[]> | null>(null);
+
   const dr7 = usePoll<Dr7>('/api/dr7', 3000);
   const proxmox = usePoll<Proxmox>('/api/proxmox', 5000);
   const adguard = usePoll<Adguard>('/api/adguard', 30000);
   const [grafana, setGrafana] = useState<number[]>(Array.from({ length: 24 }, () => 40 + Math.random() * 30));
+
+  // GitHub polling — controlled by repoRefreshKey so we can force an immediate refresh
+  useEffect(() => {
+    let alive = true;
+    const run = async () => { const e = await getEnvelope<Repo[]>('/api/repos'); if (alive) setRepos(e); };
+    run();
+    const id = setInterval(run, 5 * 60 * 1000);
+    return () => { alive = false; clearInterval(id); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoRefreshKey]);
+
+  const triggerRepoRefresh = useCallback(() => setRepoRefreshKey(k => k + 1), []);
 
   useEffect(() => {
     fetch('/config.json', { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(); return r.json(); })
@@ -324,7 +542,7 @@ export default function App() {
   }, []);
   useEffect(() => { const id = setInterval(() => setGrafana((g) => [...g.slice(1), 40 + Math.random() * 30]), 1600); return () => clearInterval(id); }, []);
 
-  const wanDown = !!repos?.stale; // GitHub needs the WAN; staleness == outage signal
+  const wanDown = !!repos?.stale;
   const px = proxmox?.data, ag = adguard?.data;
 
   const cmdIndex: CmdItem[] = useMemo(() => {
@@ -346,7 +564,10 @@ export default function App() {
         </div>
         <div className="hdr-right">
           {wanDown && <span className="badge-off" style={{ display: 'inline-flex' }}><Zap size={13} /> WAN offline</span>}
-          {cfg.editConfigUrl && <a className="pill-btn" href={cfg.editConfigUrl} target="_blank" rel="noopener noreferrer" title="Edit config"><Pencil size={15} /></a>}
+          {/* Config editor button — replaces raw GitHub edit link */}
+          <button className="pill-btn" onClick={() => setCfgEditorOpen(true)} title="Edit dashboard config">
+            <Pencil size={15} />
+          </button>
           <button className="pill-btn search-trigger" onClick={() => (window as unknown as { openCmdK?: () => void }).openCmdK?.()}>
             <Search size={15} /><span className="ph">Search apps & repos…</span><kbd>⌘K</kbd>
           </button>
@@ -381,10 +602,18 @@ export default function App() {
             <div className="grid">{cat.apps.map((a) => <AppTile key={a.name} app={a} svc={cat.svc} grafanaData={grafana} wanDown={wanDown} />)}</div>
           </section>
         ))}
-        <GithubSection env={repos} />
+        <GithubSection env={repos} onRefresh={triggerRepoRefresh} />
       </main>
 
       <CommandPalette index={cmdIndex} />
+
+      {cfgEditorOpen && (
+        <ConfigEditor
+          cfg={cfg}
+          onSave={(updated) => { setCfg(updated); if (updated.title) document.title = updated.title; }}
+          onClose={() => setCfgEditorOpen(false)}
+        />
+      )}
     </div>
   );
 }

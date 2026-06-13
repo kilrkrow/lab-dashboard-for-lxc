@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "broker": "node --import=tsx/esm server/broker.ts",
+    "broker:build": "tsc -p tsconfig.server.json",
+    "broker:start": "node dist-server/broker.js"
   },
   "dependencies": {
     "lucide-react": "^1.11.0",
