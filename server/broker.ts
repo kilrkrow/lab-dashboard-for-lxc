@@ -30,16 +30,32 @@ import { fileURLToPath } from 'node:url';
 
 // ─── env helpers ───────────────────────────────────────────────────────────────
 const e = (k: string, fb = '') => process.env[k] ?? fb;
-const UNIFI_URL     = e('UNIFI_URL',   'https://192.168.1.1');
+// UniFi — UNIFI_HOST is the base URL (with or without https://);
+// falls back to UNIFI_URL for backwards compat
+const _unifiHost    = e('UNIFI_HOST') || e('UNIFI_URL', 'https://192.168.1.1');
+const UNIFI_URL     = _unifiHost.startsWith('http') ? _unifiHost : `https://${_unifiHost}`;
 const UNIFI_API_KEY = e('UNIFI_API_KEY');
 const UNIFI_USER    = e('UNIFI_USER');
 const UNIFI_PASS    = e('UNIFI_PASS');
+const UNIFI_SITE    = e('UNIFI_SITE'); // optional override; auto-discovered if blank
+
 const GH_TOKEN      = e('GITHUB_TOKEN');
 const GH_USER       = e('GITHUB_USER', 'kilrkrow');
-const PX_URL        = e('PROXMOX_URL',   'https://127.0.0.1:8006');
-const PX_TOKEN      = e('PROXMOX_TOKEN');
+
+// Proxmox — assemble PVEAPIToken string from PROXMOX_TOKENID + PROXMOX_SECRET
+// or fall back to a pre-assembled PROXMOX_TOKEN for backwards compat
+const _pxHost       = e('PROXMOX_HOST') || e('PROXMOX_URL', 'https://127.0.0.1:8006');
+const PX_URL        = _pxHost.startsWith('http') ? _pxHost : `https://${_pxHost}`;
+const _pxTokenId    = e('PROXMOX_TOKENID');
+const _pxSecret     = e('PROXMOX_SECRET');
+const PX_TOKEN      = _pxTokenId && _pxSecret
+  ? `PVEAPIToken=${_pxTokenId}=${_pxSecret}`
+  : e('PROXMOX_TOKEN');
 const PX_NODE       = e('PROXMOX_NODE',  'pve');
-const AG_URL        = e('ADGUARD_URL',   'http://127.0.0.1');
+
+// AdGuard — ADGUARD_HOST accepts plain hostname or full URL
+const _agHost       = e('ADGUARD_HOST') || e('ADGUARD_URL', 'http://127.0.0.1');
+const AG_URL        = _agHost.startsWith('http') ? _agHost : `http://${_agHost}`;
 const AG_USER       = e('ADGUARD_USER',  'admin');
 const AG_PASS       = e('ADGUARD_PASS');
 const PORT          = parseInt(e('PORT', '3000'), 10);
@@ -179,6 +195,12 @@ async function ensureUnifiAuth(): Promise<void> {
 
 async function resolveSite(): Promise<string> {
   if (resolvedSite) return resolvedSite;
+
+  // Manual override via UNIFI_SITE env var
+  if (UNIFI_SITE) {
+    resolvedSite = `/api/s/${UNIFI_SITE}`;
+    return resolvedSite;
+  }
 
   // API key: discover via integration/v1/sites (same as UniFiHUD ResolveSiteAsync)
   if (UNIFI_API_KEY) {
