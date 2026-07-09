@@ -6,6 +6,10 @@ Builds the dashboard and publishes the changes to the remote GitHub repository.
 This script automates the local build process and deployment to the public GitHub repository. 
 It runs the npm build process, stages all changes (including the new compiled dist/ folder), 
 and pushes them to GitHub. From there, your LXC can pull the latest static files.
+
+Recommended auth (see README "Recommended Authentication Practices"):
+- Use `gh auth login` or an SSH deploy key for this repo instead of a PAT in the remote URL.
+- Never embed tokens in git remotes.
 #>
 
 Write-Host "Building Haven Dashboard..." -ForegroundColor Cyan

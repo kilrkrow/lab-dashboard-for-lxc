@@ -10,6 +10,11 @@ lerna-debug.log*
 node_modules
 *.local
 
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
 # dist
 dist/
 
