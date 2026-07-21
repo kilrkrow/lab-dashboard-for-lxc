@@ -128,3 +128,31 @@ npm run build
 ```
 
 This will generate a `dist/` directory. Simply copy the contents of `dist/` to any standard web server (like `/var/www/html/` on an Nginx server). Because the configuration is dynamically fetched at runtime, you can just drop your private `config.json` right next to the compiled `index.html`.
+
+## Recommended Deployment (Fast Iteration)
+
+For rapid development and agent-driven iteration, use the one-command deploy script instead of manual SSH + git pull. (`publish.ps1` still builds and pushes to GitHub for LXC `git pull` workflows.)
+
+### One-time setup
+
+```powershell
+$env:LXC_USER = "www-data"
+$env:LXC_HOST = "192.168.1.xx"     # IP of your LXC
+$env:LXC_PATH = "/var/www/html"
+```
+
+### Deploy
+
+```powershell
+.\deploy.ps1
+```
+
+This builds and rsyncs the site directly to the LXC in one step.
+
+### Dry run (safe preview)
+
+```powershell
+.\deploy.ps1 -WhatIf
+```
+
+Shows exactly what files would be transferred without making changes.
