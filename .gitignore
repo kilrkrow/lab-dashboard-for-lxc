@@ -17,6 +17,7 @@ node_modules
 
 # dist
 dist/
+dist-server/
 
 # Editor directories and files
 .vscode/*
