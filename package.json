@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b && tsc -p tsconfig.server.json --noEmit",
     "lint": "eslint .",
+    "check": "npm run typecheck && npm run build",
     "preview": "vite preview",
     "broker": "node --import=tsx/esm server/broker.ts",
     "broker:build": "tsc -p tsconfig.server.json",
