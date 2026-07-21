@@ -128,3 +128,41 @@ npm run build
 ```
 
 This will generate a `dist/` directory. Simply copy the contents of `dist/` to any standard web server (like `/var/www/html/` on an Nginx server). Because the configuration is dynamically fetched at runtime, you can just drop your private `config.json` right next to the compiled `index.html`.
+
+## Verify before ship
+
+```bash
+npm run check
+```
+
+Typechecks client + broker and runs a production build. GitHub Actions runs the same gate on every PR.
+
+## Recommended Deployment (Fast Iteration)
+
+For rapid development, use the one-command deploy script. (`publish.ps1` still builds and pushes to GitHub for LXC `git pull` workflows.)
+
+### One-time setup
+
+```powershell
+$env:LXC_USER = "www-data"
+$env:LXC_HOST = "192.168.1.xx"     # IP of your LXC
+$env:LXC_PATH = "/var/www/html"
+```
+
+### Deploy (with automatic live backup)
+
+```powershell
+.\deploy.ps1 -WhatIf   # dry run first
+.\deploy.ps1           # npm run check, backup live LXC, then rsync dist/
+```
+
+Before overwriting the live webroot, `deploy.ps1` mirrors it to `backups/lxc-last-good/` (gitignored).
+
+### Rollback if homepage breaks
+
+```powershell
+.\restore.ps1 -WhatIf
+.\restore.ps1
+```
+
+Puts the last pre-deploy snapshot back on the LXC.
