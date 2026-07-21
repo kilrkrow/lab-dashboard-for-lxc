@@ -23,3 +23,8 @@ node_modules
 
 # Private Config
 public/config.json
+
+# Environment secrets
+.env
+.env.local
+.env.*.local
