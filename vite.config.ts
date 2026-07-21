@@ -20,11 +20,8 @@ export default defineConfig({
         target: 'https://api.github.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/repos/, '/user/repos?per_page=100&sort=updated&affiliation=owner,organization_member'),
-        configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            // proxyReq.setHeader('Authorization', 'token YOUR_DEV_GITHUB_PAT');
-          });
-        },
+        // Prefer the local broker (`npm run broker`) for authenticated GitHub in dev.
+        // If proxying GitHub directly, set Authorization on proxyReq with a throwaway PAT.
       },
     },
   },
