@@ -29,14 +29,23 @@ aims to reduce for the **frontend** — captured here as the baseline.
 Prefer `gh auth login` / SSH deploy keys over PATs embedded in remotes. For the
 private config repo, a fine-grained PAT scoped to `Contents: Read` is suggested.
 
+## Fast path (rsync) — preferred for agent iteration
+
+1. **Gate** — `npm run check` (also forced inside `deploy.ps1`).
+2. **Dry run** — `.\deploy.ps1 -WhatIf`
+3. **Deploy** — `.\deploy.ps1`
+   - Snapshots live LXC → `backups/lxc-last-good/` (gitignored)
+   - rsyncs `dist/` to `LXC_USER@LXC_HOST:LXC_PATH`
+4. **Smoke** — hard-refresh homepage; check tiles / console.
+5. **Rollback** — `.\restore.ps1` (puts snapshot back).
+
+Env: `LXC_USER`, `LXC_HOST`, `LXC_PATH`.
+
 ## Reality checks
 
-- There is **no `deploy.ps1`** in the repo — only `publish.ps1` and `update.sh`.
-  (A common misremember; flagged here so plans don't reference a phantom file.)
-- The README documents an Nginx-based static + GitOps recipe, but the running
-  backend is the [Haven Broker](../systems/haven-broker.md), which can serve the
-  static site itself. Confirm which is actually deployed before changing deploy
-  steps.
+- Two ship paths exist: **git** (`publish.ps1` + `update.sh`) and **rsync** (`deploy.ps1` + `restore.ps1`).
+- Confirm whether the live host is Nginx static, broker-served, or both before changing steps.
+- Never deploy on red CI or failed `npm run check`.
 
 # Citations
-- `publish.ps1`, `update.sh`, `package.json` scripts, `README.md`
+- `deploy.ps1`, `restore.ps1`, `publish.ps1`, `update.sh`, `package.json`, `README.md`, `.github/workflows/ci.yml`

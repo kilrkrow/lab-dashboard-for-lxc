@@ -28,7 +28,10 @@ Green check on the PR = build not broken. No need for the human to open a termin
 | `npm run dev` | UI iteration |
 | `npm run broker` | API/broker with `.env` |
 | `npm run lint` | ESLint (not yet CI-gated — existing App lint debt) |
-| `npm run deploy` / `.\deploy.ps1` | Ship to LXC (needs env) |
+| `.\deploy.ps1 -WhatIf` then `.\deploy.ps1` | Ship to LXC (needs env; auto-backups live site) |
+| `.\restore.ps1` | Undo last rsync deploy from local snapshot |
+
+**Do not deploy to LXC unless the human explicitly asked.** Prefer green CI + `npm run check` first.
 
 ## Out of scope for CI (for now)
 

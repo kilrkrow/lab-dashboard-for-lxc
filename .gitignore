@@ -19,6 +19,9 @@ node_modules
 dist/
 dist-server/
 
+# Local LXC snapshots from deploy.ps1 (may contain private config)
+backups/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
