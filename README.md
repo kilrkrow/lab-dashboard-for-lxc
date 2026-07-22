@@ -144,25 +144,33 @@ For rapid development, use the one-command deploy script. (`publish.ps1` still b
 ### One-time setup
 
 ```powershell
-$env:LXC_USER = "www-data"
+$env:LXC_USER = "root"             # login user (www-data is often nologin)
 $env:LXC_HOST = "192.168.1.xx"     # IP of your LXC
 $env:LXC_PATH = "/var/www/html"
+# Private key that already works for root (required for BatchMode deploy):
+$env:LXC_SSH_KEY = "C:\path\to\your_root_private_key"
 ```
 
 ### Deploy (with automatic live backup)
 
 ```powershell
 .\deploy.ps1 -WhatIf   # dry run first
-.\deploy.ps1           # npm run check, backup live LXC, then rsync dist/
+.\deploy.ps1           # npm run check, backup live LXC, then sync dist/
 ```
 
-Before overwriting the live webroot, `deploy.ps1` mirrors it to `backups/lxc-last-good/` (gitignored).
+Before changing the live host, `deploy.ps1` copies the remote webroot into a **new** local folder:
+
+`backups/lxc-yyyyMMdd-HHmmss-fff/` (millisecond stamp — never overwrites a prior backup).
+
+A pointer file `backups/lxc-latest.txt` records which stamp is newest. The whole `backups/` tree is gitignored.
+
+**Safety:** deploy does **not** wipe `/var/www/html`. It only replaces top-level paths that ship in `dist/` (e.g. `index.html`, `assets/`, icons). Host files like `config.json` and `.git` stay put.
 
 ### Rollback if homepage breaks
 
 ```powershell
-.\restore.ps1 -WhatIf
-.\restore.ps1
+.\restore.ps1 -List                 # show timestamped snapshots
+.\restore.ps1 -WhatIf               # dry-run latest
+.\restore.ps1                       # restore latest
+.\restore.ps1 -Stamp 20260721-154512-123
 ```
-
-Puts the last pre-deploy snapshot back on the LXC.
