@@ -12,7 +12,9 @@
  *   UNIFI_SITE               optional site id (else auto-discover)
  *   UNIFI_API_PREFIX         force path prefix: "" or "/proxy/network"
  *                            (blank = try both; UniFi OS often needs /proxy/network)
- *   GITHUB_TOKEN             PAT with repo scope
+ *   GITHUB_TOKEN             RO PAT for repo list / issues / PRs
+ *   GITHUB_WRITE_TOKEN       RW PAT for Save-to-GitHub (config only); falls back to GITHUB_TOKEN
+ *   GITHUB_RO_TOKEN          optional alias for GITHUB_TOKEN
  *   GITHUB_USER              login user (fallback only; prefer full_name from API)
 
  *   PROXMOX_URL      https://192.168.1.10:8006
@@ -46,7 +48,9 @@ const UNIFI_SITE    = e('UNIFI_SITE'); // optional override; auto-discovered if 
 const UNIFI_API_PREFIX_ENV = e('UNIFI_API_PREFIX'); // "" allowed via explicit empty? use sentinel
 const UNIFI_PREFIX_FORCED = process.env.UNIFI_API_PREFIX !== undefined;
 
-const GH_TOKEN      = e('GITHUB_TOKEN');
+// Two-token model: RO for dashboard reads; optional RW for config commits only.
+const GH_TOKEN_RO   = e('GITHUB_TOKEN') || e('GITHUB_RO_TOKEN');
+const GH_TOKEN_RW   = e('GITHUB_WRITE_TOKEN') || e('GITHUB_TOKEN_RW') || GH_TOKEN_RO;
 const GH_USER       = e('GITHUB_USER', 'kilrkrow');
 
 /** Ensure scheme; if no explicit port, apply defaultPort (Proxmox API is :8006). */
@@ -468,8 +472,8 @@ interface RepoOut {
 }
 let reposCache: Envelope<RepoOut[]> | null = null;
 
-const GH_HEADERS = () => ({
-  authorization: `Bearer ${GH_TOKEN}`,
+const GH_HEADERS = (token: string) => ({
+  authorization: `Bearer ${token}`,
   'user-agent': 'haven-lab-broker/1.0',
   accept: 'application/vnd.github+json',
   'x-github-api-version': '2022-11-28',
@@ -485,7 +489,7 @@ function countFromListResponse(res: { headers: Record<string, string[]>; body: s
 }
 
 async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
-  if (!GH_TOKEN) return fail('GITHUB_TOKEN not set');
+  if (!GH_TOKEN_RO) return fail('GITHUB_TOKEN (or GITHUB_RO_TOKEN) not set');
 
   // Return warm cache unless forced (UI refresh button passes ?refresh=1)
   if (!force && reposCache?.ok && reposCache.data && reposCache.ts && (Date.now() - reposCache.ts) < 30_000) {
@@ -493,12 +497,13 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
   }
 
   try {
+    const hdr = GH_HEADERS(GH_TOKEN_RO);
     // Paginate up to 3 pages (300 repos) — sort=pushed matches "Recent" UI mode
     const all: GHRepo[] = [];
     for (let page = 1; page <= 3; page++) {
       const res = await rawFetch(
         `https://api.github.com/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,organization_member,collaborator`,
-        { headers: GH_HEADERS() },
+        { headers: hdr },
       );
       if (res.status !== 200) throw new Error(`GitHub HTTP ${res.status}: ${res.body.slice(0, 120)}`);
       const batch = parseJson<GHRepo[]>(res.body) ?? [];
@@ -511,7 +516,7 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
       try {
         const pr = await rawFetch(
           `https://api.github.com/repos/${r.full_name}/pulls?state=open&per_page=1`,
-          { headers: GH_HEADERS() },
+          { headers: hdr },
         );
         if (pr.status !== 200) return 0;
         return countFromListResponse(pr);
@@ -650,9 +655,8 @@ async function fetchAdguard(): Promise<Envelope<object>> {
 }
 
 // ─── /api/config — save config.json locally + push to GitHub ────────────────
-// Parses the editConfigUrl field from the on-disk config.json to determine
-// which GitHub owner/repo/branch/path to write back to.  Uses the same
-// GITHUB_TOKEN that fetchRepos already relies on.
+// Parses editConfigUrl from on-disk config. Uses GITHUB_WRITE_TOKEN (RW) for
+// commits; falls back to GITHUB_TOKEN if write token unset.
 //
 // editConfigUrl pattern:
 //   https://github.com/<owner>/<repo>/edit/<branch>/<path...>
@@ -671,7 +675,9 @@ function parseEditConfigUrl(editConfigUrl: string): { owner: string; repo: strin
 }
 
 async function pushConfigToGithub(newConfig: unknown): Promise<{ ok: boolean; message: string }> {
-  if (!GH_TOKEN) return { ok: false, message: 'GITHUB_TOKEN not set in broker env' };
+  if (!GH_TOKEN_RW) {
+    return { ok: false, message: 'GITHUB_WRITE_TOKEN (or GITHUB_TOKEN) not set in broker env' };
+  }
 
   // Read editConfigUrl from the on-disk config
   let editConfigUrl: string | undefined;
@@ -690,10 +696,7 @@ async function pushConfigToGithub(newConfig: unknown): Promise<{ ok: boolean; me
 
   const { owner, repo, branch, filePath } = coords;
   const ghHeaders = {
-    authorization: `Bearer ${GH_TOKEN}`,
-    'user-agent': 'haven-lab-broker/1.0',
-    accept: 'application/vnd.github+json',
-    'x-github-api-version': '2022-11-28',
+    ...GH_HEADERS(GH_TOKEN_RW),
     'content-type': 'application/json',
   };
   const contentsUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`;
@@ -777,7 +780,8 @@ const server = http.createServer(async (req, res) => {
       return json({
         ok: true,
         unifi: { url: UNIFI_URL, base: unifiResolvedBase, lastError: unifiLastError },
-        github: !!GH_TOKEN,
+        github: { ro: !!GH_TOKEN_RO, rw: !!GH_TOKEN_RW && GH_TOKEN_RW !== GH_TOKEN_RO ? 'separate' : !!GH_TOKEN_RW },
+
         cache: { dr7: !!dr7Cache, repos: !!reposCache },
       });
     }
