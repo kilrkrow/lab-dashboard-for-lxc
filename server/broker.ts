@@ -49,10 +49,21 @@ const UNIFI_PREFIX_FORCED = process.env.UNIFI_API_PREFIX !== undefined;
 const GH_TOKEN      = e('GITHUB_TOKEN');
 const GH_USER       = e('GITHUB_USER', 'kilrkrow');
 
+/** Ensure scheme; if no explicit port, apply defaultPort (Proxmox API is :8006). */
+function normalizeUrl(hostOrUrl: string, defaultScheme: 'http' | 'https', defaultPort?: number): string {
+  let h = (hostOrUrl || '').trim();
+  if (!h) h = defaultScheme === 'https' ? 'https://127.0.0.1' : 'http://127.0.0.1';
+  if (!/^https?:\/\//i.test(h)) h = `${defaultScheme}://${h}`;
+  const u = new URL(h);
+  if (defaultPort && !u.port) u.port = String(defaultPort);
+  // URL.toString() may add trailing slash
+  return `${u.protocol}//${u.host}${u.pathname === '/' ? '' : u.pathname}`.replace(/\/$/, '');
+}
+
 // Proxmox — assemble PVEAPIToken string from PROXMOX_TOKENID + PROXMOX_SECRET
 // or fall back to a pre-assembled PROXMOX_TOKEN for backwards compat
 const _pxHost       = e('PROXMOX_HOST') || e('PROXMOX_URL', 'https://127.0.0.1:8006');
-const PX_URL        = _pxHost.startsWith('http') ? _pxHost : `https://${_pxHost}`;
+const PX_URL        = normalizeUrl(_pxHost, 'https', 8006);
 const _pxTokenId    = e('PROXMOX_TOKENID');
 const _pxSecret     = e('PROXMOX_SECRET');
 const PX_TOKEN      = _pxTokenId && _pxSecret
@@ -60,16 +71,20 @@ const PX_TOKEN      = _pxTokenId && _pxSecret
   : e('PROXMOX_TOKEN');
 const PX_NODE       = e('PROXMOX_NODE',  'pve');
 
-// AdGuard — ADGUARD_HOST accepts plain hostname or full URL
+// AdGuard — ADGUARD_HOST accepts plain hostname or full URL (default http, not https)
 const _agHost       = e('ADGUARD_HOST') || e('ADGUARD_URL', 'http://127.0.0.1');
-const AG_URL        = _agHost.startsWith('http') ? _agHost : `http://${_agHost}`;
+const AG_URL        = normalizeUrl(_agHost, 'http');
 const AG_USER       = e('ADGUARD_USER',  'admin');
 const AG_PASS       = e('ADGUARD_PASS');
 const PORT          = parseInt(e('PORT', '3000'), 10);
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR   = path.resolve(__dirname, '../dist');
-const CONFIG_PATH = e('CONFIG_PATH', path.join(DIST_DIR, 'config.json'));
+// Live LXC uses /var/www/havenlab/config.json (old havenlab-broker). Fallbacks avoid /opt/dist.
+const CONFIG_PATH = e('CONFIG_PATH')
+  || (fs.existsSync('/var/www/havenlab/config.json') ? '/var/www/havenlab/config.json' : '')
+  || (fs.existsSync(path.join(DIST_DIR, 'config.json')) ? path.join(DIST_DIR, 'config.json') : '')
+  || (fs.existsSync('/var/www/html/config.json') ? '/var/www/html/config.json' : path.join(DIST_DIR, 'config.json'));
 
 // ─── envelope ─────────────────────────────────────────────────────────────────
 interface Envelope<T> { ok: boolean; stale: boolean; mock?: boolean; ts: number | null; data: T | null; error?: string; }
@@ -84,6 +99,8 @@ interface FetchOpts {
   body?: string;
   rejectUnauthorized?: boolean;
   cookies?: Map<string, string>;
+  /** Default 8000 — prevent hung Proxmox/UniFi from wedging the broker. */
+  timeoutMs?: number;
 }
 
 function rawFetch(url: string, opts: FetchOpts = {}): Promise<{ status: number; headers: Record<string, string[]>; body: string; rawHeaders: string[] }> {
@@ -97,6 +114,8 @@ function rawFetch(url: string, opts: FetchOpts = {}): Promise<{ status: number; 
     const reqHeaders: Record<string, string> = { ...opts.headers };
     if (cookieHeader) reqHeaders['cookie'] = cookieHeader;
     if (opts.body) reqHeaders['content-length'] = Buffer.byteLength(opts.body).toString();
+
+    const timeoutMs = opts.timeoutMs ?? 8_000;
 
     const reqOpts: https.RequestOptions = {
       hostname: u.hostname,
@@ -124,6 +143,9 @@ function rawFetch(url: string, opts: FetchOpts = {}): Promise<{ status: number; 
       });
     });
     req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`timeout ${timeoutMs}ms ${opts.method || 'GET'} ${url}`));
+    });
     if (opts.body) req.write(opts.body);
     req.end();
   });
@@ -153,8 +175,10 @@ function unifiRoot(): string {
 
 function candidatePrefixes(): string[] {
   if (UNIFI_PREFIX_FORCED) return [UNIFI_API_PREFIX_ENV]; // may be ""
-  // Prefer UniFi OS proxy path first (UDR7 / modern OS), then classic root paths (UniFiHUD default)
-  return ['/proxy/network', ''];
+  // Session user/pass often works on classic /api/s/... (UniFiHUD default).
+  // API key + UniFi OS often needs /proxy/network. Try classic first for password logins.
+  if (UNIFI_API_KEY) return ['/proxy/network', ''];
+  return ['', '/proxy/network'];
 }
 
 async function unifiAuthHeaders(): Promise<Record<string, string>> {
@@ -564,20 +588,29 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
 let pxCache: Envelope<object> | null = null;
 
 async function fetchProxmox(): Promise<Envelope<object>> {
-  if (!PX_TOKEN) return fail('PROXMOX_TOKEN not set');
+  if (!PX_TOKEN) return fail('PROXMOX_TOKEN or PROXMOX_TOKENID+PROXMOX_SECRET not set');
   try {
-    const headers = { authorization: PX_TOKEN, 'content-type': 'application/json' };
+    // Proxmox API token auth (same shape as old havenlab-broker .env)
+    const headers = {
+      authorization: PX_TOKEN.startsWith('PVEAPIToken=') ? PX_TOKEN : `PVEAPIToken=${PX_TOKEN}`,
+      'content-type': 'application/json',
+    };
     const [nodeRes, lxcRes, vmRes] = await Promise.all([
-      rawFetch(`${PX_URL}/api2/json/nodes/${PX_NODE}/status`,    { headers }),
-      rawFetch(`${PX_URL}/api2/json/nodes/${PX_NODE}/lxc`,       { headers }),
-      rawFetch(`${PX_URL}/api2/json/nodes/${PX_NODE}/qemu`,      { headers }),
+      rawFetch(`${PX_URL}/api2/json/nodes/${PX_NODE}/status`, { headers, timeoutMs: 6_000 }),
+      rawFetch(`${PX_URL}/api2/json/nodes/${PX_NODE}/lxc`,    { headers, timeoutMs: 6_000 }),
+      rawFetch(`${PX_URL}/api2/json/nodes/${PX_NODE}/qemu`,   { headers, timeoutMs: 6_000 }),
     ]);
+    if (nodeRes.status !== 200) {
+      const err = `Proxmox HTTP ${nodeRes.status}: ${nodeRes.body.slice(0, 160)}`;
+      if (pxCache?.data) return { ...stale(pxCache.data), error: err };
+      return fail(err);
+    }
     const ns = parseJson<{ data?: { cpu: number; memory: { used: number; total: number }; rootfs?: { used: number; total: number }; uptime?: number; thermal_state?: Array<{ name: string; temp: number }> } }>(nodeRes.body);
     const lxc = parseJson<{ data?: Array<{ status: string }> }>(lxcRes.body);
     const vm  = parseJson<{ data?: Array<{ status: string }> }>(vmRes.body);
 
     if (!ns?.data) {
-      if (pxCache) return { ...stale(pxCache.data!), error: 'Proxmox unreachable' };
+      if (pxCache?.data) return { ...stale(pxCache.data), error: 'Proxmox unreachable' };
       return fail('Proxmox node status empty');
     }
 
@@ -608,19 +641,48 @@ async function fetchAdguard(): Promise<Envelope<object>> {
   if (!AG_PASS) return fail('ADGUARD_PASS not set');
   try {
     const basic = Buffer.from(`${AG_USER}:${AG_PASS}`).toString('base64');
-    const res = await rawFetch(`${AG_URL}/control/stats`, {
-      headers: { authorization: `Basic ${basic}` },
-    });
-    if (res.status !== 200) throw new Error(`AdGuard HTTP ${res.status}`);
-    const j = parseJson<{ num_dns_queries?: number; num_blocked_filtering?: number }>(res.body);
+    // Prefer env URL; also try flipping http/https if the first scheme times out / fails
+    const bases = [AG_URL];
+    try {
+      const u = new URL(AG_URL);
+      u.protocol = u.protocol === 'https:' ? 'http:' : 'https:';
+      bases.push(u.toString().replace(/\/$/, ''));
+    } catch { /* ignore */ }
+
+    let res: Awaited<ReturnType<typeof rawFetch>> | null = null;
+    let lastErr = '';
+    for (const base of bases) {
+      try {
+        res = await rawFetch(`${base}/control/stats`, {
+          headers: { authorization: `Basic ${basic}` },
+          timeoutMs: 5_000,
+        });
+        if (res.status === 200) break;
+        lastErr = `AdGuard HTTP ${res.status} from ${base}`;
+      } catch (err) {
+        lastErr = String(err);
+        res = null;
+      }
+    }
+    if (!res || res.status !== 200) {
+      throw new Error(lastErr || `AdGuard failed from ${AG_URL}`);
+    }
+    const j = parseJson<{
+      num_dns_queries?: number;
+      num_blocked_filtering?: number;
+      num_replaced_safebrowsing?: number;
+      // some versions nest under different keys
+      dns_queries?: number;
+      blocked_filtering?: number;
+    }>(res.body);
     if (!j) throw new Error('AdGuard empty response');
-    const queries = j.num_dns_queries ?? 0;
-    const blocked = j.num_blocked_filtering ?? 0;
+    const queries = j.num_dns_queries ?? j.dns_queries ?? 0;
+    const blocked = j.num_blocked_filtering ?? j.blocked_filtering ?? 0;
     const data = { queries, blocked, blocked_pct: queries > 0 ? Math.round(blocked / queries * 1000) / 10 : 0 };
     agCache = ok(data);
     return agCache;
   } catch (err) {
-    if (agCache) return { ...stale(agCache.data!), error: String(err) };
+    if (agCache?.data) return { ...stale(agCache.data), error: String(err) };
     return fail(String(err));
   }
 }
@@ -795,8 +857,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Haven Lab broker running on http://0.0.0.0:${PORT}`);
-  console.log(`  UniFi: ${UNIFI_URL} ${UNIFI_API_KEY ? '(API key)' : UNIFI_USER ? '(user/pass)' : '(no auth — DR7 will return mock)'}`);
+  console.log(`[havenlab-broker] :${PORT}  config=${CONFIG_PATH}`);
+  console.log(`  UniFi: ${UNIFI_URL} ${UNIFI_API_KEY ? '(API key)' : UNIFI_USER ? '(user/pass)' : '(no auth)'}`);
+  console.log(`  Proxmox: ${PX_URL} node=${PX_NODE} token=${PX_TOKEN ? 'set' : 'MISSING'}`);
+  console.log(`  AdGuard: ${AG_URL} user=${AG_USER} pass=${AG_PASS ? 'set' : 'MISSING'}`);
   console.log(`  Dist:  ${DIST_DIR}`);
-  console.log(`  Config:${CONFIG_PATH}`);
 });
