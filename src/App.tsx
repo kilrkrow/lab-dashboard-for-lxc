@@ -213,6 +213,7 @@ function AppTile({ app, svc, grafanaData, wanDown }: { app: AppItem; svc?: boole
 
 /* ---------- GitHub section with refresh button ---------- */
 function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRefresh: () => void }) {
+  // Default A–Z (case-insensitive). Toggle switches to most recently pushed.
   const [alpha, setAlpha] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
@@ -220,8 +221,17 @@ function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRef
   const stale = !!env?.stale && repos.length > 0;
   const isNew = (iso: string) => (Date.now() - new Date(iso).getTime()) / 86400000 <= 7;
   const ago = (iso: string) => { const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000); return d <= 0 ? 'today' : d === 1 ? '1d ago' : d < 30 ? d + 'd ago' : Math.floor(d / 30) + 'mo ago'; };
-  const rows = useMemo(() => [...repos].sort((a, b) => alpha ? a.name.localeCompare(b.name) : +new Date(b.pushed_at) - +new Date(a.pushed_at)), [repos, alpha]);
+  const rows = useMemo(() => {
+    const copy = [...repos];
+    if (alpha) {
+      copy.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
+    } else {
+      copy.sort((a, b) => +new Date(b.pushed_at) - +new Date(a.pushed_at));
+    }
+    return copy;
+  }, [repos, alpha]);
   const totalIssues = repos.reduce((s, r) => s + (r.open_issues || 0), 0);
+  const totalPrs = repos.reduce((s, r) => s + (r.open_prs || 0), 0);
 
   // Track when env updates (successful refresh)
   const prevTs = useRef<number | null>(null);
@@ -235,45 +245,56 @@ function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRef
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
     onRefresh();
-    // Safety timeout — clear spinner if broker never responds
-    setTimeout(() => setRefreshing(false), 15000);
+    setTimeout(() => setRefreshing(false), 20000);
   }, [onRefresh]);
 
   const refreshedLabel = lastRefreshed
     ? `refreshed ${lastRefreshed.getHours().toString().padStart(2,'0')}:${lastRefreshed.getMinutes().toString().padStart(2,'0')}`
     : env?.ts ? `as of ${new Date(env.ts).getHours().toString().padStart(2,'0')}:${new Date(env.ts).getMinutes().toString().padStart(2,'0')}` : null;
 
-  if (!repos.length && !refreshing) return null;
+  if (!repos.length && !refreshing && !env?.error) return null;
   return (
     <section className="cat">
       <div className="cat-head">
         <div className="cat-title">GitHub</div>
-        <div className="cat-meta">{repos.length} repos · <span style={{ color: 'var(--warn)' }}>{totalIssues} open issues</span></div>
+        <div className="cat-meta">
+          {repos.length} repos
+          {totalIssues > 0 && <> · <span style={{ color: 'var(--warn)' }}>{totalIssues} issues</span></>}
+          {totalPrs > 0 && <> · {totalPrs} PRs</>}
+        </div>
         {stale && <span className="badge-off" style={{ display: 'inline-flex' }}>offline · cached {env?.ts ? ago(new Date(env.ts).toISOString()) : ''}</span>}
+        {env?.error && !repos.length && <span className="badge-off" style={{ display: 'inline-flex' }} title={env.error}>repos error</span>}
         <div className="ic-btn" style={{ display: 'flex', gap: '.4rem', alignItems: 'center' }}>
           {refreshedLabel && !refreshing && <span className="gh-refresh-ts">{refreshedLabel}</span>}
           <button
             className={'pill-btn gh-refresh' + (refreshing ? ' spinning' : '')}
             onClick={handleRefresh}
-            title="Refresh repos"
+            title="Refresh repos + open issues/PRs from GitHub"
             disabled={refreshing}
           >
             <RefreshCw size={14} />
           </button>
-          <button className={'sortbtn' + (alpha ? ' active' : '')} onClick={() => setAlpha((a) => !a)}><ArrowDownAZ size={16} /> {alpha ? 'A–Z' : 'Recent'}</button>
+          <button
+            type="button"
+            className={'sortbtn' + (alpha ? ' active' : '')}
+            onClick={() => setAlpha((a) => !a)}
+            title={alpha ? 'Sorted A–Z — click for most recently pushed' : 'Sorted by recent push — click for A–Z'}
+          >
+            <ArrowDownAZ size={16} /> {alpha ? 'A–Z' : 'Recent'}
+          </button>
         </div>
       </div>
       <div className="grid" style={stale ? { opacity: 0.6, filter: 'saturate(.5)' } : undefined}>
         {rows.map((r) => (
-          <a key={r.name} href={r.html_url} className="tile repo" target={r.html_url !== '#' ? '_blank' : undefined} rel="noopener noreferrer">
+          <a key={r.html_url || r.name} href={r.html_url} className="tile repo" target={r.html_url !== '#' ? '_blank' : undefined} rel="noopener noreferrer">
             <div className="ic">{r.name[0].toUpperCase()}</div>
             <div className="body">
               <div className="ttl"><span>{r.name}</span>{r.private ? <span className="lock"><Lock size={12} /></span> : isNew(r.pushed_at) ? <span className="new">NEW</span> : null}</div>
               <div className="sub">{r.description || '—'}</div>
               <div className="meta">
                 {r.language && <span className="chip"><span className="langdot" style={{ background: LANG_COLOR[r.language] || '#888' }} />{r.language}</span>}
-                <span className={'chip' + (r.open_issues > 0 ? ' alert' : '')}>◆ {r.open_issues}</span>
-                {r.open_prs > 0 && <span className="chip">⑂ {r.open_prs}</span>}
+                <span className={'chip' + (r.open_issues > 0 ? ' alert' : '')} title="Open issues (PRs excluded)">◆ {r.open_issues}</span>
+                {r.open_prs > 0 && <span className="chip" title="Open pull requests">⑂ {r.open_prs}</span>}
                 <span className="chip">· {ago(r.pushed_at)}</span>
               </div>
             </div>
@@ -565,23 +586,30 @@ export default function App() {
   const [cfgErr, setCfgErr] = useState(false);
   const [cfgEditorOpen, setCfgEditorOpen] = useState(false);
 
-  // Manual refresh trigger for GitHub
+  // Manual refresh trigger for GitHub (also forces broker cache bust via ?refresh=1)
   const [repoRefreshKey, setRepoRefreshKey] = useState(0);
   const [repos, setRepos] = useState<Envelope<Repo[]> | null>(null);
 
   const dr7 = usePoll<Dr7>('/api/dr7', 3000);
   const proxmox = usePoll<Proxmox>('/api/proxmox', 5000);
   const adguard = usePoll<Adguard>('/api/adguard', 30000);
-  const [grafana, setGrafana] = useState<number[]>(Array.from({ length: 24 }, () => 40 + Math.random() * 30));
+  const [grafana, setGrafana] = useState<number[]>(() => Array.from({ length: 24 }, (_, i) => 35 + ((i * 17) % 40)));
 
-  // GitHub polling — controlled by repoRefreshKey so we can force an immediate refresh
+  // GitHub polling — repoRefreshKey forces immediate refresh with ?refresh=1
   useEffect(() => {
     let alive = true;
-    const run = async () => { const e = await getEnvelope<Repo[]>('/api/repos'); if (alive) setRepos(e); };
+    const force = repoRefreshKey > 0;
+    const path = force ? '/api/repos?refresh=1' : '/api/repos';
+    const run = async () => {
+      const e = await getEnvelope<Repo[]>(path);
+      if (alive) setRepos(e);
+    };
     run();
-    const id = setInterval(run, 5 * 60 * 1000);
+    const id = setInterval(() => {
+      // background poll never force-busts (uses broker 30s warm cache)
+      getEnvelope<Repo[]>('/api/repos').then((e) => { if (alive) setRepos(e); });
+    }, 5 * 60 * 1000);
     return () => { alive = false; clearInterval(id); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoRefreshKey]);
 
   const triggerRepoRefresh = useCallback(() => setRepoRefreshKey(k => k + 1), []);
@@ -590,9 +618,13 @@ export default function App() {
     fetch('/config.json', { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(); return r.json(); })
       .then((d: DashConfig) => { setCfg(d); if (d.title) document.title = d.title; }).catch(() => setCfgErr(true));
   }, []);
-  useEffect(() => { const id = setInterval(() => setGrafana((g) => [...g.slice(1), 40 + Math.random() * 30]), 1600); return () => clearInterval(id); }, []);
+  useEffect(() => {
+    const id = setInterval(() => setGrafana((g) => [...g.slice(1), 35 + ((g[g.length - 1] + 13) % 40)]), 1600);
+    return () => clearInterval(id);
+  }, []);
 
-  const wanDown = !!repos?.stale;
+  // WAN badge from DR7 (not GitHub stale — that was a misleading coupling)
+  const wanDown = !!dr7?.data && dr7.data.wan.status === 'down';
   const px = proxmox?.data, ag = adguard?.data;
 
   const cmdIndex: CmdItem[] = useMemo(() => {

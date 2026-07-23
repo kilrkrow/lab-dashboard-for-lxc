@@ -22,6 +22,9 @@ dist-server/
 # Local LXC snapshots from deploy.ps1 (may contain private config)
 backups/
 
+# Live deploy secrets / agent iteration config
+deploy.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -6,12 +6,15 @@
  *
  * Configuration via environment variables (or .env file):
  *
- *   UNIFI_URL        https://192.168.1.1          (UniFi OS base URL)
- *   UNIFI_API_KEY    <API key from UniFi OS>       (preferred — no CSRF needed)
- *   UNIFI_USER       <read-only username>          (fallback if no API key)
- *   UNIFI_PASS       <password>
- *   GITHUB_TOKEN     <PAT with repo scope>
- *   GITHUB_USER      kilrkrow
+ *   UNIFI_URL / UNIFI_HOST   UniFi OS base (https://192.168.x.x)
+ *   UNIFI_API_KEY            UniFi OS API key (preferred — no CSRF)
+ *   UNIFI_USER / UNIFI_PASS  session login fallback
+ *   UNIFI_SITE               optional site id (else auto-discover)
+ *   UNIFI_API_PREFIX         force path prefix: "" or "/proxy/network"
+ *                            (blank = try both; UniFi OS often needs /proxy/network)
+ *   GITHUB_TOKEN             PAT with repo scope
+ *   GITHUB_USER              login user (fallback only; prefer full_name from API)
+
  *   PROXMOX_URL      https://192.168.1.10:8006
  *   PROXMOX_TOKEN    PVEAPIToken=user@pam!id=secret
  *   PROXMOX_NODE     pve
@@ -38,6 +41,10 @@ const UNIFI_API_KEY = e('UNIFI_API_KEY');
 const UNIFI_USER    = e('UNIFI_USER');
 const UNIFI_PASS    = e('UNIFI_PASS');
 const UNIFI_SITE    = e('UNIFI_SITE'); // optional override; auto-discovered if blank
+// UniFi OS on UDR/UDM often exposes Network app under /proxy/network (UniFiHUD uses root
+// when BaseAddress is set correctly; we probe both unless UNIFI_API_PREFIX is set).
+const UNIFI_API_PREFIX_ENV = e('UNIFI_API_PREFIX'); // "" allowed via explicit empty? use sentinel
+const UNIFI_PREFIX_FORCED = process.env.UNIFI_API_PREFIX !== undefined;
 
 const GH_TOKEN      = e('GITHUB_TOKEN');
 const GH_USER       = e('GITHUB_USER', 'kilrkrow');
@@ -136,10 +143,25 @@ function parseJson<T>(body: string): T | null {
 let unifiAuthenticated = false;
 let unifiCsrfToken: string | null = null;
 let unifiCookies: Map<string, string> = new Map();
-let resolvedSite: string | null = null;
+let resolvedSite: string | null = null; // e.g. /api/s/default or /proxy/network/api/s/default
+let unifiLastError: string | null = null;
+let unifiApiPrefix = ''; // '' or '/proxy/network' once discovered
+
+function unifiRoot(): string {
+  return UNIFI_URL.replace(/\/$/, '');
+}
+
+function candidatePrefixes(): string[] {
+  if (UNIFI_PREFIX_FORCED) return [UNIFI_API_PREFIX_ENV]; // may be ""
+  // Prefer UniFi OS proxy path first (UDR7 / modern OS), then classic root paths (UniFiHUD default)
+  return ['/proxy/network', ''];
+}
 
 async function unifiAuthHeaders(): Promise<Record<string, string>> {
-  const h: Record<string, string> = { 'content-type': 'application/json' };
+  const h: Record<string, string> = {
+    'content-type': 'application/json',
+    accept: 'application/json',
+  };
   if (UNIFI_API_KEY) {
     h['x-api-key'] = UNIFI_API_KEY;
   } else if (unifiCsrfToken) {
@@ -151,18 +173,21 @@ async function unifiAuthHeaders(): Promise<Record<string, string>> {
 async function ensureUnifiAuth(): Promise<void> {
   if (unifiAuthenticated) return;
 
-  // API key path — stateless, no login needed
+  // API key path — stateless, no login needed (same as UniFiHUD)
   if (UNIFI_API_KEY) { unifiAuthenticated = true; return; }
 
   // Username/password path
-  if (!UNIFI_USER || !UNIFI_PASS) return;
+  if (!UNIFI_USER || !UNIFI_PASS) {
+    unifiLastError = 'No UNIFI_API_KEY or UNIFI_USER/PASS configured';
+    return;
+  }
 
   const payload = JSON.stringify({ username: UNIFI_USER, password: UNIFI_PASS, rememberMe: true, strict: false });
   const loginPaths = ['/api/auth/login', '/api/login'];
 
   for (const lp of loginPaths) {
     try {
-      const res = await rawFetch(UNIFI_URL.replace(/\/$/, '') + lp, {
+      const res = await rawFetch(unifiRoot() + lp, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: payload,
@@ -171,14 +196,12 @@ async function ensureUnifiAuth(): Promise<void> {
       if (res.status < 200 || res.status >= 300) continue;
       if (res.body.includes('"rc":"error"')) continue;
 
-      // Capture cookies from Set-Cookie headers
       const setCookie = res.headers['set-cookie'] ?? [];
       for (const sc of setCookie) {
         const m = sc.match(/^([^=]+)=([^;]*)/);
         if (m) unifiCookies.set(m[1].trim(), m[2].trim());
       }
 
-      // Capture CSRF token from response header or JSON body
       const csrfFromHeader = (res.headers['x-csrf-token'] ?? [])[0];
       if (csrfFromHeader) {
         unifiCsrfToken = csrfFromHeader;
@@ -188,69 +211,138 @@ async function ensureUnifiAuth(): Promise<void> {
       }
 
       unifiAuthenticated = true;
+      unifiLastError = null;
       return;
     } catch { /* try next path */ }
   }
+  unifiLastError = 'UniFi login failed (tried /api/auth/login and /api/login)';
 }
 
 async function resolveSite(): Promise<string> {
   if (resolvedSite) return resolvedSite;
 
-  // Manual override via UNIFI_SITE env var
+  const siteId = UNIFI_SITE || 'default';
+  const prefixes = candidatePrefixes();
+
+  // Manual site id still needs a working prefix
   if (UNIFI_SITE) {
-    resolvedSite = `/api/s/${UNIFI_SITE}`;
+    for (const prefix of prefixes) {
+      const sitePath = `${prefix}/api/s/${UNIFI_SITE}`;
+      const probe = await unifiProbe(sitePath + '/stat/device');
+      if (probe) {
+        unifiApiPrefix = prefix;
+        resolvedSite = sitePath;
+        return resolvedSite;
+      }
+    }
+    // fall through with classic
+    unifiApiPrefix = prefixes[0] ?? '';
+    resolvedSite = `${unifiApiPrefix}/api/s/${UNIFI_SITE}`;
     return resolvedSite;
   }
 
   // API key: discover via integration/v1/sites (same as UniFiHUD ResolveSiteAsync)
   if (UNIFI_API_KEY) {
     try {
-      const res = await rawFetch(UNIFI_URL.replace(/\/$/, '') + '/integration/v1/sites', {
+      const res = await rawFetch(unifiRoot() + '/integration/v1/sites', {
         headers: await unifiAuthHeaders(),
       });
       const j = parseJson<{ data?: Array<{ internalReference: string }> }>(res.body);
       if (j?.data && j.data.length > 0) {
-        resolvedSite = `/api/s/${j.data[0].internalReference}`;
+        const ref = j.data[0].internalReference;
+        for (const prefix of prefixes) {
+          const sitePath = `${prefix}/api/s/${ref}`;
+          if (await unifiProbe(sitePath + '/stat/device')) {
+            unifiApiPrefix = prefix;
+            resolvedSite = sitePath;
+            return resolvedSite;
+          }
+        }
+        unifiApiPrefix = prefixes[0] ?? '';
+        resolvedSite = `${unifiApiPrefix}/api/s/${ref}`;
         return resolvedSite;
       }
     } catch { /* fall through */ }
   }
 
-  // Session auth fallback
-  resolvedSite = '/api/s/default';
+  // Probe default site under each prefix
+  for (const prefix of prefixes) {
+    const sitePath = `${prefix}/api/s/${siteId}`;
+    if (await unifiProbe(sitePath + '/stat/device')) {
+      unifiApiPrefix = prefix;
+      resolvedSite = sitePath;
+      return resolvedSite;
+    }
+  }
+
+  unifiApiPrefix = prefixes[0] ?? '';
+  resolvedSite = `${unifiApiPrefix}/api/s/${siteId}`;
   return resolvedSite;
+}
+
+async function unifiProbe(pathFromRoot: string): Promise<boolean> {
+  try {
+    await ensureUnifiAuth();
+    const res = await rawFetch(unifiRoot() + pathFromRoot, {
+      headers: await unifiAuthHeaders(),
+      cookies: unifiCookies,
+    });
+    if (res.status === 200) {
+      const j = parseJson<{ data?: unknown[] }>(res.body);
+      return Array.isArray(j?.data);
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 async function unifiGet<T>(path: string): Promise<T | null> {
   await ensureUnifiAuth();
   const site = await resolveSite();
-  const url = UNIFI_URL.replace(/\/$/, '') + site + path;
+  const url = unifiRoot() + site + path;
   try {
     const res = await rawFetch(url, {
       headers: await unifiAuthHeaders(),
       cookies: unifiCookies,
     });
     if (res.status === 401 || res.status === 403) {
-      // Session expired — force re-auth on next poll
       unifiAuthenticated = false;
       unifiCsrfToken = null;
       unifiCookies = new Map();
       resolvedSite = null;
+      unifiLastError = `UniFi HTTP ${res.status} on ${site}${path}`;
       return null;
     }
+    if (res.status !== 200) {
+      unifiLastError = `UniFi HTTP ${res.status} on ${site}${path}: ${res.body.slice(0, 120)}`;
+      return null;
+    }
+    unifiLastError = null;
     return parseJson<T>(res.body);
-  } catch { return null; }
+  } catch (err) {
+    unifiLastError = String(err);
+    return null;
+  }
 }
 
 // ─── DR7 types (mirrors UniFiModels.cs) ───────────────────────────────────────
 interface UniFiDevice {
   name?: string; type?: string; model?: string; is_gateway?: boolean;
-  uplink?: { 'rx_bytes-r': number; 'tx_bytes-r': number; rx_bytes?: number; tx_bytes?: number };
+  uplink?: {
+    'rx_bytes-r'?: number; 'tx_bytes-r'?: number;
+    rx_bytes?: number; tx_bytes?: number;
+    name?: string; ip?: string; uptime?: number;
+  };
   stat?: { gw?: Record<string, unknown> };
-  port_table?: Array<{ port_idx: number; name: string; up: boolean; is_uplink?: boolean }>;
+  port_table?: Array<{
+    port_idx?: number; name?: string; up?: boolean; is_uplink?: boolean;
+    'rx_bytes-r'?: number; 'tx_bytes-r'?: number;
+  }>;
   system_stats?: { cpu?: string; mem?: string };
   temperatures?: Array<{ name: string; value: number }>;
   uptime?: number;
+  'ip_addresses'?: string[];
   port_overrides?: unknown[];
 }
 interface UniFiSta {
@@ -271,60 +363,93 @@ interface Dr7Data {
 
 let dr7Cache: Envelope<Dr7Data> | null = null;
 
-async function fetchDr7(): Promise<Envelope<Dr7Data>> {
-  if (!UNIFI_URL) return fail('UNIFI_URL not set');
+/** Bytes/sec → Mbps (same formula as UniFiHUD GetWanRatesAsync). */
+function bytesPerSecToMbps(rate: number | undefined | null): number {
+  return Math.max(0, (rate ?? 0) * 8 / 1_000_000);
+}
+
+function pickGateway(devs: UniFiDevice[]): UniFiDevice | undefined {
+  // Same priority as UniFiHUD GetWanRatesAsync
+  return devs.find(d => d.is_gateway)
+    ?? devs.find(d => d.type === 'ugw' || d.type === 'udm')
+    ?? devs.find(d => d.model && /UDR|UDM|UDW/i.test(d.model));
+}
+
+/** Resolve rx/tx rates: prefer uplink (UniFiHUD), else uplink port_table row. */
+function wanRatesFromGateway(gw: UniFiDevice | undefined): {
+  rx: number; tx: number; port: string; ip: string | null; hasUplink: boolean;
+} {
+  const uplink = gw?.uplink;
+  let rx = uplink?.['rx_bytes-r'] ?? 0;
+  let tx = uplink?.['tx_bytes-r'] ?? 0;
+  let port = uplink?.name || 'WAN';
+  const ip = uplink?.ip ?? gw?.ip_addresses?.[0] ?? null;
+
+  if (rx === 0 && tx === 0 && gw?.port_table?.length) {
+    const upPort = gw.port_table.find(p => p.is_uplink)
+      ?? gw.port_table.find(p => p.up && /wan|sfp|uplink/i.test(p.name || ''));
+    if (upPort) {
+      rx = upPort['rx_bytes-r'] ?? 0;
+      tx = upPort['tx_bytes-r'] ?? 0;
+      port = upPort.name || port;
+    }
+  }
+
+  return { rx, tx, port, ip, hasUplink: !!uplink || rx > 0 || tx > 0 };
+}
+
+async function fetchDr7(force = false): Promise<Envelope<Dr7Data>> {
+  if (!UNIFI_URL) return fail('UNIFI_URL/UNIFI_HOST not set');
+  if (!UNIFI_API_KEY && !(UNIFI_USER && UNIFI_PASS)) {
+    return fail('Set UNIFI_API_KEY or UNIFI_USER/UNIFI_PASS (same secrets as UniFiHUD)');
+  }
 
   try {
-    // stat/device — gateway info, WAN rates (rx_bytes-r / tx_bytes-r)
-    const devResp = await unifiGet<{ data?: UniFiDevice[] }>('/stat/device');
-    // stat/sta — connected clients
-    const staResp = await unifiGet<{ data?: UniFiSta[] }>('/stat/sta');
-
-    if (!devResp?.data) {
-      if (dr7Cache) return { ...stale(dr7Cache.data!), error: 'UniFi unreachable — serving cache' };
-      return fail('UniFi stat/device returned no data');
+    // On force, re-resolve site/prefix (UniFi OS path may change after OS update)
+    if (force) {
+      resolvedSite = null;
+      unifiAuthenticated = false;
     }
 
-    const devs = devResp.data;
+    const devResp = await unifiGet<{ data?: UniFiDevice[] }>('/stat/device');
+    const staResp = await unifiGet<{ data?: UniFiSta[] }>('/stat/sta');
 
-    // Find gateway — same priority as UniFiHUD GetWanRatesAsync
-    const gw = devs.find(d => d.is_gateway)
-      ?? devs.find(d => d.type === 'ugw' || d.type === 'udm')
-      ?? devs.find(d => d.model && /UDR|UDM|UDW/i.test(d.model));
+    if (!devResp?.data?.length) {
+      const err = unifiLastError || 'UniFi stat/device returned no data';
+      if (dr7Cache?.data) return { ...stale(dr7Cache.data), error: err };
+      return fail(err);
+    }
 
-    const uplink = gw?.uplink;
-    // rx_bytes-r and tx_bytes-r are bytes/sec pre-computed by UniFi OS
-    const rxRate = uplink?.['rx_bytes-r'] ?? 0;
-    const txRate = uplink?.['tx_bytes-r'] ?? 0;
-    const downMbps = rxRate * 8 / 1_000_000;
-    const upMbps   = txRate * 8 / 1_000_000;
+    const gw = pickGateway(devResp.data);
+    const { rx, tx, port, ip, hasUplink } = wanRatesFromGateway(gw);
+    const downMbps = bytesPerSecToMbps(rx);
+    const upMbps = bytesPerSecToMbps(tx);
 
-    // WAN status: if both rates are 0 and no uplink, treat as down
-    const wanStatus = (rxRate === 0 && txRate === 0 && !uplink) ? 'down' : 'up';
+    // UniFiHUD treats 0/0 rates as "check model" not necessarily WAN down.
+    // We only mark WAN down when there is no uplink object and no rates.
+    const wanStatus = (!hasUplink && rx === 0 && tx === 0) ? 'down' : 'up';
 
-    // Gateway CPU/RAM/temp from system_stats
-    const cpuPct  = gw?.system_stats?.cpu   != null ? parseFloat(gw.system_stats.cpu)   : null;
-    const memPct  = gw?.system_stats?.mem   != null ? parseFloat(gw.system_stats.mem)   : null;
+    const cpuPct  = gw?.system_stats?.cpu != null ? parseFloat(gw.system_stats.cpu) : null;
+    const memPct  = gw?.system_stats?.mem != null ? parseFloat(gw.system_stats.mem) : null;
     const tempEntry = gw?.temperatures?.find(t => /cpu|board/i.test(t.name));
     const tempC   = tempEntry ? tempEntry.value : null;
     const uptimeDays = gw?.uptime != null ? Math.floor(gw.uptime / 86400) : null;
 
-    // Clients breakdown from stat/sta
     const stas: UniFiSta[] = staResp?.data ?? [];
     const wired    = stas.filter(s => s.is_wired).length;
     const wireless = stas.length - wired;
-    const clients6 = stas.filter(s => !s.is_wired && s.radio === '6e').length;
-    const clients5 = stas.filter(s => !s.is_wired && (s.radio === 'na' || s.radio === '5g')).length;
-    const clients24 = stas.filter(s => !s.is_wired && (s.radio === 'ng' || s.radio === '2g' || s.radio === 'b' || s.radio === 'g')).length;
+    const clients6 = stas.filter(s => !s.is_wired && (s.radio === '6e' || s.radio === '6g')).length;
+    const clients5 = stas.filter(s => !s.is_wired && (s.radio === 'na' || s.radio === '5g' || s.radio === 'ac')).length;
+    const clients24 = stas.filter(s => !s.is_wired && (s.radio === 'ng' || s.radio === '2g' || s.radio === 'b' || s.radio === 'g' || s.radio === 'ax')).length;
 
     const data: Dr7Data = {
       wan: {
         status: wanStatus,
-        down_mbps: Math.max(0, downMbps),
-        up_mbps:   Math.max(0, upMbps),
+        down_mbps: downMbps,
+        up_mbps: upMbps,
         latency_ms: null,
-        ip: null,
-        port: 'SFP+ 10G',
+        ip,
+        port,
       },
       clients: { total: stas.length, wired, wireless },
       radios: [
@@ -339,55 +464,98 @@ async function fetchDr7(): Promise<Envelope<Dr7Data>> {
     dr7Cache = ok(data);
     return dr7Cache;
   } catch (err) {
-    if (dr7Cache) return { ...stale(dr7Cache.data!), error: String(err) };
+    if (dr7Cache?.data) return { ...stale(dr7Cache.data), error: String(err) };
     return fail(String(err));
   }
 }
 
 // ─── /api/repos ───────────────────────────────────────────────────────────────
-interface GHRepo { name: string; description: string | null; html_url: string; language: string | null; pushed_at: string; stargazers_count: number; private: boolean; fork: boolean; archived: boolean; open_issues_count: number; }
-interface RepoOut { name: string; description: string | null; html_url: string; language: string | null; pushed_at: string; stars: number; private: boolean; fork: boolean; archived: boolean; open_prs: number; open_issues: number; }
+interface GHRepo {
+  name: string; full_name: string; description: string | null; html_url: string;
+  language: string | null; pushed_at: string; stargazers_count: number;
+  private: boolean; fork: boolean; archived: boolean; open_issues_count: number;
+}
+interface RepoOut {
+  name: string; description: string | null; html_url: string; language: string | null;
+  pushed_at: string; stars: number; private: boolean; fork: boolean; archived: boolean;
+  open_prs: number; open_issues: number;
+}
 let reposCache: Envelope<RepoOut[]> | null = null;
 
-async function fetchRepos(): Promise<Envelope<RepoOut[]>> {
-  if (!GH_TOKEN) return fail('GITHUB_TOKEN not set');
-  try {
-    const res = await rawFetch(`https://api.github.com/user/repos?per_page=100&sort=pushed&affiliation=owner`, {
-      headers: {
-        authorization: `Bearer ${GH_TOKEN}`,
-        'user-agent': 'haven-lab-broker/1.0',
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28',
-      },
-    });
-    if (res.status !== 200) throw new Error(`GitHub HTTP ${res.status}: ${res.body.slice(0, 120)}`);
-    const repos = parseJson<GHRepo[]>(res.body) ?? [];
+const GH_HEADERS = () => ({
+  authorization: `Bearer ${GH_TOKEN}`,
+  'user-agent': 'haven-lab-broker/1.0',
+  accept: 'application/vnd.github+json',
+  'x-github-api-version': '2022-11-28',
+});
 
-    // Fetch open PRs concurrently for each repo (best-effort)
-    const prCounts = await Promise.all(repos.map(async r => {
+/** Count open items via Link last-page or body length (per_page=1). */
+function countFromListResponse(res: { headers: Record<string, string[]>; body: string }): number {
+  const hdr = res.headers['link']?.[0] ?? '';
+  const lastMatch = hdr.match(/[?&]page=(\d+)>;\s*rel="last"/);
+  if (lastMatch) return parseInt(lastMatch[1], 10);
+  const arr = parseJson<unknown[]>(res.body) ?? [];
+  return arr.length;
+}
+
+async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
+  if (!GH_TOKEN) return fail('GITHUB_TOKEN not set');
+
+  // Return warm cache unless forced (UI refresh button passes ?refresh=1)
+  if (!force && reposCache?.ok && reposCache.data && reposCache.ts && (Date.now() - reposCache.ts) < 30_000) {
+    return reposCache;
+  }
+
+  try {
+    // Paginate up to 3 pages (300 repos) — sort=pushed matches "Recent" UI mode
+    const all: GHRepo[] = [];
+    for (let page = 1; page <= 3; page++) {
+      const res = await rawFetch(
+        `https://api.github.com/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,organization_member,collaborator`,
+        { headers: GH_HEADERS() },
+      );
+      if (res.status !== 200) throw new Error(`GitHub HTTP ${res.status}: ${res.body.slice(0, 120)}`);
+      const batch = parseJson<GHRepo[]>(res.body) ?? [];
+      all.push(...batch);
+      if (batch.length < 100) break;
+    }
+
+    // Open PRs per repo (best-effort). Use full_name so org repos work (not GH_USER/name).
+    const prCounts = await Promise.all(all.map(async (r) => {
       try {
-        const pr = await rawFetch(`https://api.github.com/repos/${GH_USER}/${r.name}/pulls?state=open&per_page=1`, {
-          headers: { authorization: `Bearer ${GH_TOKEN}`, 'user-agent': 'haven-lab-broker/1.0', accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' },
-        });
-        const hdr = pr.headers['link']?.[0] ?? '';
-        // If Link header has rel="last", parse page number; otherwise count array
-        const lastMatch = hdr.match(/page=(\d+)>; rel="last"/);
-        if (lastMatch) return parseInt(lastMatch[1], 10);
-        const arr = parseJson<unknown[]>(pr.body) ?? [];
-        return arr.length;
+        const pr = await rawFetch(
+          `https://api.github.com/repos/${r.full_name}/pulls?state=open&per_page=1`,
+          { headers: GH_HEADERS() },
+        );
+        if (pr.status !== 200) return 0;
+        return countFromListResponse(pr);
       } catch { return 0; }
     }));
 
-    const out: RepoOut[] = repos.map((r, i) => ({
-      name: r.name, description: r.description, html_url: r.html_url,
-      language: r.language, pushed_at: r.pushed_at, stars: r.stargazers_count,
-      private: r.private, fork: r.fork, archived: r.archived,
-      open_prs: prCounts[i], open_issues: r.open_issues_count,
-    }));
+    // GitHub open_issues_count includes PRs — subtract so UI "issues" is issues-only
+    const out: RepoOut[] = all.map((r, i) => {
+      const openPrs = prCounts[i];
+      const issuesOnly = Math.max(0, (r.open_issues_count ?? 0) - openPrs);
+      return {
+        name: r.name,
+        description: r.description,
+        html_url: r.html_url,
+        language: r.language,
+        pushed_at: r.pushed_at,
+        stars: r.stargazers_count,
+        private: r.private,
+        fork: r.fork,
+        archived: r.archived,
+        open_prs: openPrs,
+        open_issues: issuesOnly,
+      };
+    });
+
+    // Stable A–Z helper: leave order as pushed from API; UI sorts client-side
     reposCache = ok(out);
     return reposCache;
   } catch (err) {
-    if (reposCache) return { ...stale(reposCache.data!), error: String(err) };
+    if (reposCache?.data) return { ...stale(reposCache.data), error: String(err) };
     return fail(String(err));
   }
 }
@@ -574,10 +742,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    if (pathname === '/api/dr7')      return json(await fetchDr7());
-    if (pathname === '/api/repos')    return json(await fetchRepos());
+    const q = new URL(url, 'http://localhost').searchParams;
+    const force = q.get('refresh') === '1' || q.get('force') === '1';
+
+    if (pathname === '/api/dr7')      return json(await fetchDr7(force));
+    if (pathname === '/api/repos')    return json(await fetchRepos(force));
     if (pathname === '/api/proxmox')  return json(await fetchProxmox());
     if (pathname === '/api/adguard')  return json(await fetchAdguard());
+    if (pathname === '/api/health') {
+      return json({
+        ok: true,
+        unifi: { url: UNIFI_URL, prefix: unifiApiPrefix, site: resolvedSite, lastError: unifiLastError },
+        github: !!GH_TOKEN,
+        cache: { dr7: !!dr7Cache, repos: !!reposCache },
+      });
+    }
 
     // PUT /api/config — save edited config to disk + push to GitHub
     if (pathname === '/api/config' && req.method === 'PUT') {

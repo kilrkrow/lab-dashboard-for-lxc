@@ -12,8 +12,11 @@
     "preview": "vite preview",
     "broker": "node --import=tsx/esm server/broker.ts",
     "broker:build": "tsc -p tsconfig.server.json",
-    "broker:start": "node dist-server/broker.js"
+    "broker:start": "node dist-server/broker.js",
+    "smoke": "powershell -NoProfile -File ./smoke.ps1",
+    "cycle": "powershell -NoProfile -File ./agent-cycle.ps1"
   },
+
   "dependencies": {
     "lucide-react": "^1.11.0",
     "react": "^19.2.5",
