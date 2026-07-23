@@ -80,11 +80,11 @@ const PORT          = parseInt(e('PORT', '3000'), 10);
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR   = path.resolve(__dirname, '../dist');
-// Live LXC uses /var/www/havenlab/config.json (old havenlab-broker). Fallbacks avoid /opt/dist.
+// Live LXC: nginx serves config.json from /var/www/html (NOT the broker). Prefer that path.
 const CONFIG_PATH = e('CONFIG_PATH')
+  || (fs.existsSync('/var/www/html/config.json') ? '/var/www/html/config.json' : '')
   || (fs.existsSync('/var/www/havenlab/config.json') ? '/var/www/havenlab/config.json' : '')
-  || (fs.existsSync(path.join(DIST_DIR, 'config.json')) ? path.join(DIST_DIR, 'config.json') : '')
-  || (fs.existsSync('/var/www/html/config.json') ? '/var/www/html/config.json' : path.join(DIST_DIR, 'config.json'));
+  || (fs.existsSync(path.join(DIST_DIR, 'config.json')) ? path.join(DIST_DIR, 'config.json') : path.join(DIST_DIR, 'config.json'));
 
 // ─── envelope ─────────────────────────────────────────────────────────────────
 interface Envelope<T> { ok: boolean; stale: boolean; mock?: boolean; ts: number | null; data: T | null; error?: string; }
