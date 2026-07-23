@@ -5,6 +5,10 @@ export interface Repo {
   pushed_at: string; stars: number; private: boolean; fork: boolean; archived: boolean;
   open_prs: number; open_issues: number;
 }
+export interface GhIssue {
+  id: number; number: number; title: string; html_url: string;
+  repo: string; private_repo: boolean; updated_at: string; labels: string[];
+}
 export interface Radio { band: string; clients: number; util_pct: number; }
 export interface Dr7 {
   wan: { status: string; down_mbps: number; up_mbps: number; latency_ms: number | null; ip: string | null; port: string };

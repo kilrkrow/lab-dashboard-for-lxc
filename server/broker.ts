@@ -551,6 +551,80 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
   }
 }
 
+// ─── /api/issues ──────────────────────────────────────────────────────────────
+// Open issues across the authenticated user's repos (not PRs).
+interface IssueOut {
+  id: number;
+  number: number;
+  title: string;
+  html_url: string;
+  repo: string;
+  private_repo: boolean;
+  updated_at: string;
+  labels: string[];
+}
+let issuesCache: Envelope<IssueOut[]> | null = null;
+
+async function fetchIssues(force = false): Promise<Envelope<IssueOut[]>> {
+  if (!GH_TOKEN_RO) return fail('GITHUB_TOKEN (or GITHUB_RO_TOKEN) not set');
+  if (!force && issuesCache?.ok && issuesCache.data && issuesCache.ts && (Date.now() - issuesCache.ts) < 30_000) {
+    return issuesCache;
+  }
+
+  try {
+    const hdr = GH_HEADERS(GH_TOKEN_RO);
+    // Open issues only (exclude PRs). user: covers owned repos including private with RO token.
+    const q = encodeURIComponent(`is:open is:issue user:${GH_USER}`);
+    const all: IssueOut[] = [];
+    for (let page = 1; page <= 3; page++) {
+      const res = await rawFetch(
+        `https://api.github.com/search/issues?q=${q}&sort=updated&order=desc&per_page=50&page=${page}`,
+        { headers: hdr },
+      );
+      if (res.status !== 200) throw new Error(`GitHub issues HTTP ${res.status}: ${res.body.slice(0, 160)}`);
+      const body = parseJson<{ items?: Array<Record<string, unknown>>; incomplete_results?: boolean }>(res.body);
+      const items = body?.items ?? [];
+      for (const it of items) {
+        const html = String(it.html_url || '');
+        // https://github.com/owner/repo/issues/N
+        const m = html.match(/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/i);
+        const repo = m ? m[1] : String(it.repository_url || '').replace(/.*\/repos\//, '');
+        const labels = Array.isArray(it.labels)
+          ? (it.labels as Array<{ name?: string }>).map((l) => l.name || '').filter(Boolean)
+          : [];
+        all.push({
+          id: num(it.id),
+          number: num(it.number),
+          title: String(it.title || ''),
+          html_url: html,
+          repo,
+          private_repo: false, // search payload does not always include; filled below if possible
+          updated_at: String(it.updated_at || ''),
+          labels,
+        });
+      }
+      if (items.length < 50) break;
+    }
+
+    // Mark private using repos cache when available
+    const priv = new Set((reposCache?.data || []).filter((r) => r.private).map((r) => {
+      try {
+        const u = new URL(r.html_url);
+        return u.pathname.replace(/^\//, '').toLowerCase();
+      } catch { return r.name.toLowerCase(); }
+    }));
+    for (const iss of all) {
+      if (priv.has(iss.repo.toLowerCase())) iss.private_repo = true;
+    }
+
+    issuesCache = ok(all);
+    return issuesCache;
+  } catch (err) {
+    if (issuesCache?.data) return { ...stale(issuesCache.data), error: String(err) };
+    return fail(String(err));
+  }
+}
+
 // ─── /api/proxmox ─────────────────────────────────────────────────────────────
 let pxCache: Envelope<object> | null = null;
 
@@ -774,6 +848,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/dr7')      return json(await fetchDr7(force));
     if (pathname === '/api/repos')    return json(await fetchRepos(force));
+    if (pathname === '/api/issues')   return json(await fetchIssues(force));
     if (pathname === '/api/proxmox')  return json(await fetchProxmox());
     if (pathname === '/api/adguard')  return json(await fetchAdguard());
     if (pathname === '/api/health') {

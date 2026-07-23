@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Search, Hexagon, Pencil, Zap, ArrowDownAZ, Lock, RefreshCw, Plus, Trash2, X, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { getEnvelope } from './api';
-import type { Repo, Dr7, Proxmox, Adguard, Envelope } from './api';
+import type { Repo, GhIssue, Dr7, Proxmox, Adguard, Envelope } from './api';
 import './App.css';
 
 /* ---------- config.json (apps/sections), served locally by the broker ---------- */
@@ -306,8 +306,8 @@ function CategorySection({
   );
 }
 
-/* ---------- GitHub section with refresh button ---------- */
-function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRefresh: () => void }) {
+/* ---------- GITHUB repos (live API — not the static config category) ---------- */
+function GithubReposSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRefresh: () => void }) {
   // Default A–Z (case-insensitive). Toggle switches to most recently pushed.
   const [alpha, setAlpha] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -348,13 +348,17 @@ function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRef
     : env?.ts ? `as of ${new Date(env.ts).getHours().toString().padStart(2,'0')}:${new Date(env.ts).getMinutes().toString().padStart(2,'0')}` : null;
 
   if (!repos.length && !refreshing && !env?.error) return null;
+  const nPriv = repos.filter((r) => r.private).length;
+  const nPub = repos.length - nPriv;
   return (
     <section className="cat">
       <div className="cat-head">
-        <div className="cat-title">GitHub</div>
+        <div className="cat-title">GITHUB</div>
         <div className="cat-meta">
           {repos.length} repos
-          {totalIssues > 0 && <> · <span style={{ color: 'var(--warn)' }}>{totalIssues} issues</span></>}
+          {nPub > 0 && <> · <span style={{ color: 'var(--accent)' }}>{nPub} public</span></>}
+          {nPriv > 0 && <> · <span style={{ color: 'var(--violet)' }}>{nPriv} private</span></>}
+          {totalIssues > 0 && <> · <span style={{ color: 'var(--warn)' }}>{totalIssues} open issues</span></>}
           {totalPrs > 0 && <> · {totalPrs} PRs</>}
         </div>
         {stale && <span className="badge-off" style={{ display: 'inline-flex' }}>offline · cached {env?.ts ? ago(new Date(env.ts).toISOString()) : ''}</span>}
@@ -364,7 +368,7 @@ function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRef
           <button
             className={'pill-btn gh-refresh' + (refreshing ? ' spinning' : '')}
             onClick={handleRefresh}
-            title="Refresh repos + open issues/PRs from GitHub"
+            title="Refresh repository list from GitHub"
             disabled={refreshing}
           >
             <RefreshCw size={14} />
@@ -403,6 +407,92 @@ function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRef
                 <span className={'chip' + (r.open_issues > 0 ? ' alert' : '')} title="Open issues (PRs excluded)">◆ {r.open_issues}</span>
                 {r.open_prs > 0 && <span className="chip" title="Open pull requests">⑂ {r.open_prs}</span>}
                 <span className="chip">· {ago(r.pushed_at)}</span>
+              </div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ---------- GITHUB ISSUES (open issues across your repos) ---------- */
+function GithubIssuesSection({ env, onRefresh }: { env: Envelope<GhIssue[]> | null; onRefresh: () => void }) {
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const issues = env?.data || [];
+  const stale = !!env?.stale && issues.length > 0;
+  const ago = (iso: string) => {
+    if (!iso) return '';
+    const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return d <= 0 ? 'today' : d === 1 ? '1d ago' : d < 30 ? d + 'd ago' : Math.floor(d / 30) + 'mo ago';
+  };
+
+  const prevTs = useRef<number | null>(null);
+  useEffect(() => {
+    if (env?.ts != null && env.ts !== prevTs.current) {
+      prevTs.current = env.ts;
+      if (refreshing) { setRefreshing(false); setLastRefreshed(new Date()); }
+    }
+  }, [env?.ts, refreshing]);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    onRefresh();
+    setTimeout(() => setRefreshing(false), 20000);
+  }, [onRefresh]);
+
+  const refreshedLabel = lastRefreshed
+    ? `refreshed ${lastRefreshed.getHours().toString().padStart(2, '0')}:${lastRefreshed.getMinutes().toString().padStart(2, '0')}`
+    : env?.ts
+      ? `as of ${new Date(env.ts).getHours().toString().padStart(2, '0')}:${new Date(env.ts).getMinutes().toString().padStart(2, '0')}`
+      : null;
+
+  if (!issues.length && !refreshing && !env?.error) return null;
+
+  return (
+    <section className="cat">
+      <div className="cat-head">
+        <div className="cat-title">GITHUB ISSUES</div>
+        <div className="cat-meta">
+          {issues.length} open
+        </div>
+        {stale && <span className="badge-off" style={{ display: 'inline-flex' }}>offline · cached</span>}
+        {env?.error && !issues.length && (
+          <span className="badge-off" style={{ display: 'inline-flex' }} title={env.error}>issues error</span>
+        )}
+        <div className="ic-btn" style={{ display: 'flex', gap: '.4rem', alignItems: 'center' }}>
+          {refreshedLabel && !refreshing && <span className="gh-refresh-ts">{refreshedLabel}</span>}
+          <button
+            className={'pill-btn gh-refresh' + (refreshing ? ' spinning' : '')}
+            onClick={handleRefresh}
+            title="Refresh open issues from GitHub"
+            disabled={refreshing}
+          >
+            <RefreshCw size={14} />
+          </button>
+        </div>
+      </div>
+      <div className="grid" style={stale ? { opacity: 0.6, filter: 'saturate(.5)' } : undefined}>
+        {issues.map((iss) => (
+          <a
+            key={iss.id || iss.html_url}
+            href={iss.html_url}
+            className={'tile repo issue ' + (iss.private_repo ? 'private' : 'public')}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <div className="ic">#</div>
+            <div className="body">
+              <div className="ttl">
+                <span>{iss.title}</span>
+              </div>
+              <div className="sub">{iss.repo} · #{iss.number}</div>
+              <div className="meta">
+                {iss.labels.slice(0, 3).map((lb) => (
+                  <span key={lb} className="chip">{lb}</span>
+                ))}
+                {iss.updated_at && <span className="chip">· {ago(iss.updated_at)}</span>}
               </div>
             </div>
           </a>
@@ -720,16 +810,18 @@ export default function App() {
     });
   }, []);
 
-  // Manual refresh trigger for GitHub (also forces broker cache bust via ?refresh=1)
+  // Manual refresh triggers for GitHub (forces broker cache bust via ?refresh=1)
   const [repoRefreshKey, setRepoRefreshKey] = useState(0);
+  const [issueRefreshKey, setIssueRefreshKey] = useState(0);
   const [repos, setRepos] = useState<Envelope<Repo[]> | null>(null);
+  const [issues, setIssues] = useState<Envelope<GhIssue[]> | null>(null);
 
   const dr7 = usePoll<Dr7>('/api/dr7', 3000);
   const proxmox = usePoll<Proxmox>('/api/proxmox', 5000);
   const adguard = usePoll<Adguard>('/api/adguard', 30000);
   const [grafana, setGrafana] = useState<number[]>(() => Array.from({ length: 24 }, (_, i) => 35 + ((i * 17) % 40)));
 
-  // GitHub polling — repoRefreshKey forces immediate refresh with ?refresh=1
+  // Live GITHUB repos (full list from API — not static config category)
   useEffect(() => {
     let alive = true;
     const force = repoRefreshKey > 0;
@@ -740,13 +832,29 @@ export default function App() {
     };
     run();
     const id = setInterval(() => {
-      // background poll never force-busts (uses broker 30s warm cache)
       getEnvelope<Repo[]>('/api/repos').then((e) => { if (alive) setRepos(e); });
     }, 5 * 60 * 1000);
     return () => { alive = false; clearInterval(id); };
   }, [repoRefreshKey]);
 
+  // Live GITHUB ISSUES
+  useEffect(() => {
+    let alive = true;
+    const force = issueRefreshKey > 0;
+    const path = force ? '/api/issues?refresh=1' : '/api/issues';
+    const run = async () => {
+      const e = await getEnvelope<GhIssue[]>(path);
+      if (alive) setIssues(e);
+    };
+    run();
+    const id = setInterval(() => {
+      getEnvelope<GhIssue[]>('/api/issues').then((e) => { if (alive) setIssues(e); });
+    }, 5 * 60 * 1000);
+    return () => { alive = false; clearInterval(id); };
+  }, [issueRefreshKey]);
+
   const triggerRepoRefresh = useCallback(() => setRepoRefreshKey(k => k + 1), []);
+  const triggerIssueRefresh = useCallback(() => setIssueRefreshKey(k => k + 1), []);
 
   useEffect(() => {
     fetch('/config.json', { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(); return r.json(); })
@@ -812,7 +920,10 @@ export default function App() {
       <Dr7Module env={dr7} />
 
       <main>
-        {cfg.categories.map((cat) => (
+        {cfg.categories
+          // Static config "GITHUB" (old hand-picked 22) is replaced by live API sections below
+          .filter((cat) => !/^github(\s+issues)?$/i.test(cat.name.trim()))
+          .map((cat) => (
           <CategorySection
             key={cat.name}
             cat={cat}
@@ -824,7 +935,8 @@ export default function App() {
             wanDown={wanDown}
           />
         ))}
-        <GithubSection env={repos} onRefresh={triggerRepoRefresh} />
+        <GithubReposSection env={repos} onRefresh={triggerRepoRefresh} />
+        <GithubIssuesSection env={issues} onRefresh={triggerIssueRefresh} />
       </main>
 
       <CommandPalette index={cmdIndex} onOpenApp={markAppUsed} />
