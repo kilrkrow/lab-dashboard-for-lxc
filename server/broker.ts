@@ -155,228 +155,120 @@ function parseJson<T>(body: string): T | null {
   try { return JSON.parse(body) as T; } catch { return null; }
 }
 
-// ─── UniFi auth state ─────────────────────────────────────────────────────────
-// Mirrors the auth logic from UniFiHUD/Services/UniFiApiService.cs:
-//   1. Prefer X-API-Key (stateless, no CSRF needed)
-//   2. Fall back to username/password session with CSRF token capture
-//   3. Site resolution via /integration/v1/sites (API key) or /api/s/default (session)
-//   4. WAN rates from stat/device uplink rx_bytes-r / tx_bytes-r (bytes/sec → Mbps)
+// ─── UniFi (DR7) — matches live lib/unifi.mjs that worked on this LXC ─────────
+// Password path: POST /api/auth/login → Cookie, then
+// GET /proxy/network/api/s/{site}/stat/{health,sta,device}
+// API key path: UniFiHUD-style x-api-key + same network paths (and classic fallback).
 
-let unifiAuthenticated = false;
-let unifiCsrfToken: string | null = null;
-let unifiCookies: Map<string, string> = new Map();
-let resolvedSite: string | null = null; // e.g. /api/s/default or /proxy/network/api/s/default
+let unifiCookieHeader: string | null = null;
+let unifiCookieAt = 0;
 let unifiLastError: string | null = null;
-let unifiApiPrefix = ''; // '' or '/proxy/network' once discovered
+let unifiResolvedBase: string | null = null; // e.g. https://host/proxy/network/api/s/default
+const CACHE_DIR = e('CACHE_DIR', path.join(__dirname, 'cache'));
+const UNIFI_COOKIE_FILE = path.join(CACHE_DIR, 'unifi-session.json');
+const UNIFI_COOKIE_TTL_MS = 8 * 60 * 60_000; // 8h disk reuse (rememberMe login)
 
 function unifiRoot(): string {
   return UNIFI_URL.replace(/\/$/, '');
 }
 
-function candidatePrefixes(): string[] {
-  if (UNIFI_PREFIX_FORCED) return [UNIFI_API_PREFIX_ENV]; // may be ""
-  // Session user/pass often works on classic /api/s/... (UniFiHUD default).
-  // API key + UniFi OS often needs /proxy/network. Try classic first for password logins.
-  if (UNIFI_API_KEY) return ['/proxy/network', ''];
-  return ['', '/proxy/network'];
+function num(v: unknown, d = 0): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : d;
 }
 
-async function unifiAuthHeaders(): Promise<Record<string, string>> {
-  const h: Record<string, string> = {
-    'content-type': 'application/json',
-    accept: 'application/json',
-  };
-  if (UNIFI_API_KEY) {
-    h['x-api-key'] = UNIFI_API_KEY;
-  } else if (unifiCsrfToken) {
-    h['x-csrf-token'] = unifiCsrfToken;
-  }
-  return h;
-}
-
-async function ensureUnifiAuth(): Promise<void> {
-  if (unifiAuthenticated) return;
-
-  // API key path — stateless, no login needed (same as UniFiHUD)
-  if (UNIFI_API_KEY) { unifiAuthenticated = true; return; }
-
-  // Username/password path
-  if (!UNIFI_USER || !UNIFI_PASS) {
-    unifiLastError = 'No UNIFI_API_KEY or UNIFI_USER/PASS configured';
-    return;
-  }
-
-  const payload = JSON.stringify({ username: UNIFI_USER, password: UNIFI_PASS, rememberMe: true, strict: false });
-  const loginPaths = ['/api/auth/login', '/api/login'];
-
-  for (const lp of loginPaths) {
-    try {
-      const res = await rawFetch(unifiRoot() + lp, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: payload,
-      });
-
-      if (res.status < 200 || res.status >= 300) continue;
-      if (res.body.includes('"rc":"error"')) continue;
-
-      const setCookie = res.headers['set-cookie'] ?? [];
-      for (const sc of setCookie) {
-        const m = sc.match(/^([^=]+)=([^;]*)/);
-        if (m) unifiCookies.set(m[1].trim(), m[2].trim());
-      }
-
-      const csrfFromHeader = (res.headers['x-csrf-token'] ?? [])[0];
-      if (csrfFromHeader) {
-        unifiCsrfToken = csrfFromHeader;
-      } else {
-        const j = parseJson<{ csrfToken?: string; data?: { csrfToken?: string } }>(res.body);
-        unifiCsrfToken = j?.csrfToken ?? j?.data?.csrfToken ?? null;
-      }
-
-      unifiAuthenticated = true;
-      unifiLastError = null;
-      return;
-    } catch { /* try next path */ }
-  }
-  unifiLastError = 'UniFi login failed (tried /api/auth/login and /api/login)';
-}
-
-async function resolveSite(): Promise<string> {
-  if (resolvedSite) return resolvedSite;
-
-  const siteId = UNIFI_SITE || 'default';
-  const prefixes = candidatePrefixes();
-
-  // Manual site id still needs a working prefix
-  if (UNIFI_SITE) {
-    for (const prefix of prefixes) {
-      const sitePath = `${prefix}/api/s/${UNIFI_SITE}`;
-      const probe = await unifiProbe(sitePath + '/stat/device');
-      if (probe) {
-        unifiApiPrefix = prefix;
-        resolvedSite = sitePath;
-        return resolvedSite;
-      }
-    }
-    // fall through with classic
-    unifiApiPrefix = prefixes[0] ?? '';
-    resolvedSite = `${unifiApiPrefix}/api/s/${UNIFI_SITE}`;
-    return resolvedSite;
-  }
-
-  // API key: discover via integration/v1/sites (same as UniFiHUD ResolveSiteAsync)
-  if (UNIFI_API_KEY) {
-    try {
-      const res = await rawFetch(unifiRoot() + '/integration/v1/sites', {
-        headers: await unifiAuthHeaders(),
-      });
-      const j = parseJson<{ data?: Array<{ internalReference: string }> }>(res.body);
-      if (j?.data && j.data.length > 0) {
-        const ref = j.data[0].internalReference;
-        for (const prefix of prefixes) {
-          const sitePath = `${prefix}/api/s/${ref}`;
-          if (await unifiProbe(sitePath + '/stat/device')) {
-            unifiApiPrefix = prefix;
-            resolvedSite = sitePath;
-            return resolvedSite;
-          }
-        }
-        unifiApiPrefix = prefixes[0] ?? '';
-        resolvedSite = `${unifiApiPrefix}/api/s/${ref}`;
-        return resolvedSite;
-      }
-    } catch { /* fall through */ }
-  }
-
-  // Probe default site under each prefix
-  for (const prefix of prefixes) {
-    const sitePath = `${prefix}/api/s/${siteId}`;
-    if (await unifiProbe(sitePath + '/stat/device')) {
-      unifiApiPrefix = prefix;
-      resolvedSite = sitePath;
-      return resolvedSite;
-    }
-  }
-
-  unifiApiPrefix = prefixes[0] ?? '';
-  resolvedSite = `${unifiApiPrefix}/api/s/${siteId}`;
-  return resolvedSite;
-}
-
-async function unifiProbe(pathFromRoot: string): Promise<boolean> {
+function loadUnifiCookieFromDisk(): void {
   try {
-    await ensureUnifiAuth();
-    const res = await rawFetch(unifiRoot() + pathFromRoot, {
-      headers: await unifiAuthHeaders(),
-      cookies: unifiCookies,
-    });
-    if (res.status === 200) {
-      const j = parseJson<{ data?: unknown[] }>(res.body);
-      return Array.isArray(j?.data);
+    if (!fs.existsSync(UNIFI_COOKIE_FILE)) return;
+    const j = parseJson<{ cookie?: string; at?: number }>(fs.readFileSync(UNIFI_COOKIE_FILE, 'utf8'));
+    if (j?.cookie && j.at && Date.now() - j.at < UNIFI_COOKIE_TTL_MS) {
+      unifiCookieHeader = j.cookie;
+      unifiCookieAt = j.at;
     }
-    return false;
-  } catch {
-    return false;
-  }
+  } catch { /* ignore */ }
 }
 
-async function unifiGet<T>(path: string): Promise<T | null> {
-  await ensureUnifiAuth();
-  const site = await resolveSite();
-  const url = unifiRoot() + site + path;
+function saveUnifiCookieToDisk(cookie: string, at: number): void {
   try {
-    const res = await rawFetch(url, {
-      headers: await unifiAuthHeaders(),
-      cookies: unifiCookies,
-    });
-    if (res.status === 401 || res.status === 403) {
-      unifiAuthenticated = false;
-      unifiCsrfToken = null;
-      unifiCookies = new Map();
-      resolvedSite = null;
-      unifiLastError = `UniFi HTTP ${res.status} on ${site}${path}`;
-      return null;
-    }
-    if (res.status !== 200) {
-      unifiLastError = `UniFi HTTP ${res.status} on ${site}${path}: ${res.body.slice(0, 120)}`;
-      return null;
-    }
-    unifiLastError = null;
-    return parseJson<T>(res.body);
-  } catch (err) {
-    unifiLastError = String(err);
-    return null;
-  }
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.writeFileSync(UNIFI_COOKIE_FILE, JSON.stringify({ cookie, at }), 'utf8');
+  } catch { /* ignore */ }
 }
 
-// ─── DR7 types (mirrors UniFiModels.cs) ───────────────────────────────────────
-interface UniFiDevice {
-  name?: string; type?: string; model?: string; is_gateway?: boolean;
-  uplink?: {
-    'rx_bytes-r'?: number; 'tx_bytes-r'?: number;
-    rx_bytes?: number; tx_bytes?: number;
-    name?: string; ip?: string; uptime?: number;
-  };
-  stat?: { gw?: Record<string, unknown> };
-  port_table?: Array<{
-    port_idx?: number; name?: string; up?: boolean; is_uplink?: boolean;
-    'rx_bytes-r'?: number; 'tx_bytes-r'?: number;
-  }>;
-  system_stats?: { cpu?: string; mem?: string };
-  temperatures?: Array<{ name: string; value: number }>;
-  uptime?: number;
-  'ip_addresses'?: string[];
-  port_overrides?: unknown[];
+loadUnifiCookieFromDisk();
+
+/** Session login — same contract as /opt/havenlab-broker/lib/unifi.mjs */
+async function unifiLogin(): Promise<string> {
+  if (!UNIFI_USER || !UNIFI_PASS) throw new Error('UNIFI_USER/UNIFI_PASS required');
+
+  // Memory cookie still fresh
+  if (unifiCookieHeader && Date.now() - unifiCookieAt < 30 * 60_000) {
+    return unifiCookieHeader;
+  }
+  // Disk cookie (survives broker restart — avoids UniFi login rate limits)
+  if (!unifiCookieHeader) loadUnifiCookieFromDisk();
+  if (unifiCookieHeader && Date.now() - unifiCookieAt < UNIFI_COOKIE_TTL_MS) {
+    return unifiCookieHeader;
+  }
+
+  const payload = JSON.stringify({
+    username: UNIFI_USER,
+    password: UNIFI_PASS,
+    rememberMe: true,
+  });
+
+  const res = await rawFetch(unifiRoot() + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+    timeoutMs: 12_000,
+  });
+
+  if (res.status === 429) {
+    throw new Error(
+      'UniFi login rate-limited (429). Wait ~15-60 min, or set UNIFI_API_KEY in /opt/havenlab-broker/.env (preferred). Do not restart broker repeatedly.',
+    );
+  }
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`UniFi login HTTP ${res.status}: ${res.body.slice(0, 160)}`);
+  }
+  if (res.body.includes('"rc":"error"')) {
+    throw new Error(`UniFi login error: ${res.body.slice(0, 160)}`);
+  }
+
+  const setCookie = res.headers['set-cookie'] ?? [];
+  const cookie = setCookie.map((c) => c.split(';')[0]).join('; ');
+  if (!cookie) throw new Error('UniFi login returned no cookie');
+
+  unifiCookieHeader = cookie;
+  unifiCookieAt = Date.now();
+  saveUnifiCookieToDisk(cookie, unifiCookieAt);
+  unifiLastError = null;
+  return cookie;
 }
-interface UniFiSta {
-  is_wired?: boolean;
-  radio?: string;  // 'ng' = 2.4GHz, 'na' = 5GHz, '6e' = 6GHz
-  last_seen?: number;
+
+function networkBases(site: string): string[] {
+  const root = unifiRoot();
+  if (UNIFI_PREFIX_FORCED) {
+    const p = UNIFI_API_PREFIX_ENV;
+    return [`${root}${p}/api/s/${site}`];
+  }
+  // Working LXC broker used proxy/network first (UniFi OS on UDR7)
+  return [
+    `${root}/proxy/network/api/s/${site}`,
+    `${root}/api/s/${site}`,
+  ];
+}
+
+async function unifiGetJson(
+  url: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; json: unknown; body: string }> {
+  const res = await rawFetch(url, { headers, timeoutMs: 12_000 });
+  return { status: res.status, json: parseJson(res.body), body: res.body };
 }
 
 // ─── /api/dr7 ─────────────────────────────────────────────────────────────────
-// Matches the Dr7 interface in src/api.ts
+// Matches src/api.ts Dr7 + live lib/unifi.mjs field mapping
 interface Dr7Data {
   wan: { status: string; down_mbps: number; up_mbps: number; latency_ms: number | null; ip: string | null; port: string };
   clients: { total: number; wired: number; wireless: number };
@@ -387,109 +279,162 @@ interface Dr7Data {
 
 let dr7Cache: Envelope<Dr7Data> | null = null;
 
-/** Bytes/sec → Mbps (same formula as UniFiHUD GetWanRatesAsync). */
-function bytesPerSecToMbps(rate: number | undefined | null): number {
-  return Math.max(0, (rate ?? 0) * 8 / 1_000_000);
-}
-
-function pickGateway(devs: UniFiDevice[]): UniFiDevice | undefined {
-  // Same priority as UniFiHUD GetWanRatesAsync
-  return devs.find(d => d.is_gateway)
-    ?? devs.find(d => d.type === 'ugw' || d.type === 'udm')
-    ?? devs.find(d => d.model && /UDR|UDM|UDW/i.test(d.model));
-}
-
-/** Resolve rx/tx rates: prefer uplink (UniFiHUD), else uplink port_table row. */
-function wanRatesFromGateway(gw: UniFiDevice | undefined): {
-  rx: number; tx: number; port: string; ip: string | null; hasUplink: boolean;
-} {
-  const uplink = gw?.uplink;
-  let rx = uplink?.['rx_bytes-r'] ?? 0;
-  let tx = uplink?.['tx_bytes-r'] ?? 0;
-  let port = uplink?.name || 'WAN';
-  const ip = uplink?.ip ?? gw?.ip_addresses?.[0] ?? null;
-
-  if (rx === 0 && tx === 0 && gw?.port_table?.length) {
-    const upPort = gw.port_table.find(p => p.is_uplink)
-      ?? gw.port_table.find(p => p.up && /wan|sfp|uplink/i.test(p.name || ''));
-    if (upPort) {
-      rx = upPort['rx_bytes-r'] ?? 0;
-      tx = upPort['tx_bytes-r'] ?? 0;
-      port = upPort.name || port;
-    }
-  }
-
-  return { rx, tx, port, ip, hasUplink: !!uplink || rx > 0 || tx > 0 };
-}
-
 async function fetchDr7(force = false): Promise<Envelope<Dr7Data>> {
   if (!UNIFI_URL) return fail('UNIFI_URL/UNIFI_HOST not set');
   if (!UNIFI_API_KEY && !(UNIFI_USER && UNIFI_PASS)) {
-    return fail('Set UNIFI_API_KEY or UNIFI_USER/UNIFI_PASS (same secrets as UniFiHUD)');
+    return fail('Set UNIFI_API_KEY or UNIFI_USER/UNIFI_PASS');
   }
 
   try {
-    // On force, re-resolve site/prefix (UniFi OS path may change after OS update)
     if (force) {
-      resolvedSite = null;
-      unifiAuthenticated = false;
+      unifiCookieHeader = null;
+      unifiCookieAt = 0;
+      unifiResolvedBase = null;
     }
 
-    const devResp = await unifiGet<{ data?: UniFiDevice[] }>('/stat/device');
-    const staResp = await unifiGet<{ data?: UniFiSta[] }>('/stat/sta');
+    const site = UNIFI_SITE || 'default';
+    const headers: Record<string, string> = { Accept: 'application/json' };
 
-    if (!devResp?.data?.length) {
-      const err = unifiLastError || 'UniFi stat/device returned no data';
-      if (dr7Cache?.data) return { ...stale(dr7Cache.data), error: err };
-      return fail(err);
+    if (UNIFI_API_KEY) {
+      headers['X-API-KEY'] = UNIFI_API_KEY;
+    } else {
+      const cookie = await unifiLogin();
+      headers['Cookie'] = cookie;
     }
 
-    const gw = pickGateway(devResp.data);
-    const { rx, tx, port, ip, hasUplink } = wanRatesFromGateway(gw);
-    const downMbps = bytesPerSecToMbps(rx);
-    const upMbps = bytesPerSecToMbps(tx);
+    // Prefer cached base that already worked this process
+    const bases = unifiResolvedBase
+      ? [unifiResolvedBase]
+      : networkBases(site);
 
-    // UniFiHUD treats 0/0 rates as "check model" not necessarily WAN down.
-    // We only mark WAN down when there is no uplink object and no rates.
-    const wanStatus = (!hasUplink && rx === 0 && tx === 0) ? 'down' : 'up';
+    let health: Array<Record<string, unknown>> = [];
+    let sta: Array<Record<string, unknown>> = [];
+    let devices: Array<Record<string, unknown>> = [];
+    let usedBase = '';
+    let lastErr = '';
 
-    const cpuPct  = gw?.system_stats?.cpu != null ? parseFloat(gw.system_stats.cpu) : null;
-    const memPct  = gw?.system_stats?.mem != null ? parseFloat(gw.system_stats.mem) : null;
-    const tempEntry = gw?.temperatures?.find(t => /cpu|board/i.test(t.name));
-    const tempC   = tempEntry ? tempEntry.value : null;
-    const uptimeDays = gw?.uptime != null ? Math.floor(gw.uptime / 86400) : null;
+    for (const base of bases) {
+      try {
+        const hRes = await unifiGetJson(`${base}/stat/health`, headers);
+        if (hRes.status === 401 || hRes.status === 403) {
+          // force re-login once
+          unifiCookieHeader = null;
+          if (!UNIFI_API_KEY) {
+            headers['Cookie'] = await unifiLogin();
+          }
+          const retry = await unifiGetJson(`${base}/stat/health`, headers);
+          if (retry.status !== 200) {
+            lastErr = `UniFi HTTP ${retry.status} on ${base}/stat/health: ${retry.body.slice(0, 120)}`;
+            continue;
+          }
+          health = (retry.json as { data?: Array<Record<string, unknown>> })?.data ?? [];
+        } else if (hRes.status !== 200) {
+          lastErr = `UniFi HTTP ${hRes.status} on ${base}/stat/health: ${hRes.body.slice(0, 120)}`;
+          continue;
+        } else {
+          health = (hRes.json as { data?: Array<Record<string, unknown>> })?.data ?? [];
+        }
 
-    const stas: UniFiSta[] = staResp?.data ?? [];
-    const wired    = stas.filter(s => s.is_wired).length;
-    const wireless = stas.length - wired;
-    const clients6 = stas.filter(s => !s.is_wired && (s.radio === '6e' || s.radio === '6g')).length;
-    const clients5 = stas.filter(s => !s.is_wired && (s.radio === 'na' || s.radio === '5g' || s.radio === 'ac')).length;
-    const clients24 = stas.filter(s => !s.is_wired && (s.radio === 'ng' || s.radio === '2g' || s.radio === 'b' || s.radio === 'g' || s.radio === 'ax')).length;
+        const [sRes, dRes] = await Promise.all([
+          unifiGetJson(`${base}/stat/sta`, headers),
+          unifiGetJson(`${base}/stat/device`, headers),
+        ]);
+        if (sRes.status !== 200 || dRes.status !== 200) {
+          lastErr = `UniFi sta=${sRes.status} device=${dRes.status} on ${base}`;
+          continue;
+        }
+        sta = (sRes.json as { data?: Array<Record<string, unknown>> })?.data ?? [];
+        devices = (dRes.json as { data?: Array<Record<string, unknown>> })?.data ?? [];
+        usedBase = base;
+        unifiResolvedBase = base;
+        break;
+      } catch (err) {
+        lastErr = String(err);
+      }
+    }
+
+    if (!usedBase) {
+      unifiLastError = lastErr || 'UniFi network API unreachable';
+      if (dr7Cache?.data) return { ...stale(dr7Cache.data), error: unifiLastError };
+      return fail(unifiLastError);
+    }
+
+    // WAN from stat/health subsystem (old unifi.mjs) — more reliable on UDR7 than uplink alone
+    const wanH = (health.find((h) => h.subsystem === 'wan') || {}) as Record<string, unknown>;
+    const gw = (devices.find((d) => /UDR|UDM|gateway/i.test(String(d.model || d.type || '')))
+      || devices.find((d) => d.is_gateway)
+      || devices[0]
+      || {}) as Record<string, unknown>;
+
+    const uplink = (gw.uplink || {}) as Record<string, unknown>;
+    const downFromHealth = num(wanH['rx_bytes-r']) * 8 / 1e6;
+    const upFromHealth = num(wanH['tx_bytes-r']) * 8 / 1e6;
+    const downFromUp = num(uplink['rx_bytes-r']) * 8 / 1e6;
+    const upFromUp = num(uplink['tx_bytes-r']) * 8 / 1e6;
+    const downMbps = +(downFromHealth || downFromUp).toFixed(1);
+    const upMbps = +(upFromHealth || upFromUp).toFixed(1);
+
+    const wanStatus =
+      wanH.status === 'ok' || wanH['wan_ip']
+        ? 'up'
+        : (wanH.status ? 'down' : (downMbps > 0 || upMbps > 0 ? 'up' : 'unknown'));
+
+    const wired = sta.filter((s) => s.is_wired).length;
+    const wireless = sta.length - wired;
+
+    const bandLabel: Record<string, string> = { ng: '2.4', na: '5', '6e': '6', '6g': '6' };
+    const radioStats = (gw.radio_table_stats as Array<Record<string, unknown>> | undefined) || [];
+    let radios = radioStats.map((r) => ({
+      band: bandLabel[String(r.radio)] || String(r.radio || '?'),
+      clients: num(r.num_sta),
+      util_pct: num(r['cu_total'] ?? r.channel_util ?? r.tx_retries, 0),
+    }));
+    if (!radios.length) {
+      // fallback: count by radio field on stations
+      const c6 = sta.filter((s) => !s.is_wired && (s.radio === '6e' || s.radio === '6g')).length;
+      const c5 = sta.filter((s) => !s.is_wired && (s.radio === 'na' || s.radio === '5g')).length;
+      const c24 = sta.filter((s) => !s.is_wired && (s.radio === 'ng' || s.radio === '2g')).length;
+      radios = [
+        { band: '6', clients: c6, util_pct: 0 },
+        { band: '5', clients: c5, util_pct: 0 },
+        { band: '2.4', clients: c24, util_pct: 0 },
+      ];
+    }
+
+    // UniFi uses hyphenated system-stats on many firmwares
+    const ss = (gw['system-stats'] || gw.system_stats || {}) as Record<string, unknown>;
+    const temps = gw.temperatures as Array<{ name?: string; value?: number }> | undefined;
+    const tempC = num(temps?.[0]?.value, NaN);
+    const cpuRaw = ss.cpu;
+    const memRaw = ss.mem;
 
     const data: Dr7Data = {
       wan: {
-        status: wanStatus,
-        down_mbps: downMbps,
-        up_mbps: upMbps,
-        latency_ms: null,
-        ip,
-        port,
+        status: String(wanStatus),
+        down_mbps: Math.max(0, downMbps),
+        up_mbps: Math.max(0, upMbps),
+        latency_ms: wanH.latency != null ? num(wanH.latency, 0) : null,
+        ip: (wanH['wan_ip'] as string) || (uplink.ip as string) || null,
+        port: uplink.port_idx != null ? `port ${uplink.port_idx}` : '10G SFP+',
       },
-      clients: { total: stas.length, wired, wireless },
-      radios: [
-        { band: '6',   clients: clients6,  util_pct: 0 },
-        { band: '5',   clients: clients5,  util_pct: 0 },
-        { band: '2.4', clients: clients24, util_pct: 0 },
-      ],
-      gateway: { cpu_pct: cpuPct, mem_pct: memPct, temp_c: tempC, uptime_days: uptimeDays },
-      poe: { used_w: 0, max_w: 15.4 },
+      clients: { total: sta.length, wired, wireless },
+      radios,
+      gateway: {
+        cpu_pct: cpuRaw != null && cpuRaw !== '' ? num(parseFloat(String(cpuRaw)), 0) : null,
+        mem_pct: memRaw != null && memRaw !== '' ? num(parseFloat(String(memRaw)), 0) : null,
+        temp_c: Number.isFinite(tempC) ? tempC : null,
+        uptime_days: gw.uptime != null ? Math.floor(num(gw.uptime) / 86400) : null,
+      },
+      poe: { used_w: num(gw.total_used_power, 0), max_w: 15.4 },
     };
 
+    unifiLastError = null;
     dr7Cache = ok(data);
     return dr7Cache;
   } catch (err) {
-    if (dr7Cache?.data) return { ...stale(dr7Cache.data), error: String(err) };
-    return fail(String(err));
+    unifiLastError = String(err);
+    if (dr7Cache?.data) return { ...stale(dr7Cache.data), error: unifiLastError };
+    return fail(unifiLastError);
   }
 }
 
@@ -814,7 +759,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/health') {
       return json({
         ok: true,
-        unifi: { url: UNIFI_URL, prefix: unifiApiPrefix, site: resolvedSite, lastError: unifiLastError },
+        unifi: { url: UNIFI_URL, base: unifiResolvedBase, lastError: unifiLastError },
         github: !!GH_TOKEN,
         cache: { dr7: !!dr7Cache, repos: !!reposCache },
       });
