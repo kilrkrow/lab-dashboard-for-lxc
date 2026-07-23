@@ -112,12 +112,21 @@
   .tile .body{min-width:0;flex:1}
   .tile .ttl{font-weight:600;font-size:.97rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:.4rem}
   .tile .sub{font-size:.76rem;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.1rem}
-  .svc-dot{position:absolute;top:.6rem;right:.6rem} .lock{color:var(--t3);display:flex}
+  .svc-dot{position:absolute;top:.6rem;right:.6rem} .lock{color:var(--violet);display:flex}
   .repo .meta{display:flex;align-items:center;gap:.7rem;margin-top:.4rem;flex-wrap:wrap}
   .langdot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:.3rem;vertical-align:middle}
   .chip{display:inline-flex;align-items:center;gap:.3rem;font-size:.7rem;color:var(--t2);font-variant-numeric:tabular-nums}
   .chip.alert{color:var(--warn)}
   .new{font-size:.6rem;font-weight:700;letter-spacing:.08em;color:var(--accent);border:1px solid var(--border-hi);background:var(--accent-soft);border-radius:5px;padding:.05rem .3rem}
+  /* Public = cyan accent; private = violet (lock + border/icon) */
+  .tile.repo.public{border-color:rgba(0,240,255,.18)}
+  .tile.repo.public .ic{color:var(--accent);border-color:rgba(0,240,255,.28);background:rgba(0,240,255,.08)}
+  .tile.repo.public:hover{border-color:var(--border-hi);box-shadow:0 14px 34px -12px rgba(0,0,0,.6),0 0 22px -8px var(--accent-soft)}
+  .tile.repo.public:hover .ic{background:var(--accent);color:#04141a;border-color:var(--accent)}
+  .tile.repo.private{border-color:rgba(165,180,252,.22)}
+  .tile.repo.private .ic{color:var(--violet);border-color:rgba(165,180,252,.32);background:rgba(165,180,252,.10)}
+  .tile.repo.private:hover{border-color:rgba(165,180,252,.5);box-shadow:0 14px 34px -12px rgba(0,0,0,.6),0 0 22px -8px rgba(165,180,252,.25)}
+  .tile.repo.private:hover .ic{background:var(--violet);color:#0c0e18;border-color:var(--violet)}
   .cached-note{display:none;font-size:.68rem;color:var(--warn);margin-top:.5rem}
   body.offline #githubGrid .tile{opacity:.6;filter:saturate(.5)}
   body.offline #ghOff,body.offline #dr7Off{display:inline-flex}

@@ -381,10 +381,17 @@ function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRef
       </div>
       <div className="grid" style={stale ? { opacity: 0.6, filter: 'saturate(.5)' } : undefined}>
         {rows.map((r) => (
-          <a key={r.html_url || r.name} href={r.html_url} className="tile repo" target={r.html_url !== '#' ? '_blank' : undefined} rel="noopener noreferrer">
+          <a
+            key={r.html_url || r.name}
+            href={r.html_url}
+            className={'tile repo ' + (r.private ? 'private' : 'public')}
+            target={r.html_url !== '#' ? '_blank' : undefined}
+            rel="noopener noreferrer"
+            title={r.private ? 'Private repository' : 'Public repository'}
+          >
             <div className="ic">{r.name[0].toUpperCase()}</div>
             <div className="body">
-              <div className="ttl"><span>{r.name}</span>{r.private ? <span className="lock"><Lock size={12} /></span> : isNew(r.pushed_at) ? <span className="new">NEW</span> : null}</div>
+              <div className="ttl"><span>{r.name}</span>{r.private ? <span className="lock" title="Private"><Lock size={12} /></span> : isNew(r.pushed_at) ? <span className="new">NEW</span> : null}</div>
               <div className="sub">{r.description || '—'}</div>
               <div className="meta">
                 {r.language && <span className="chip"><span className="langdot" style={{ background: LANG_COLOR[r.language] || '#888' }} />{r.language}</span>}
