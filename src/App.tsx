@@ -391,7 +391,12 @@ function GithubSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRef
           >
             <div className="ic">{r.name[0].toUpperCase()}</div>
             <div className="body">
-              <div className="ttl"><span>{r.name}</span>{r.private ? <span className="lock" title="Private"><Lock size={12} /></span> : isNew(r.pushed_at) ? <span className="new">NEW</span> : null}</div>
+              <div className="ttl">
+                <span>{r.name}</span>
+                <span className="vis-badge">{r.private ? 'private' : 'public'}</span>
+                {r.private ? <span className="lock" title="Private"><Lock size={12} /></span> : null}
+                {!r.private && isNew(r.pushed_at) ? <span className="new">NEW</span> : null}
+              </div>
               <div className="sub">{r.description || '—'}</div>
               <div className="meta">
                 {r.language && <span className="chip"><span className="langdot" style={{ background: LANG_COLOR[r.language] || '#888' }} />{r.language}</span>}
