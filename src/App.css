@@ -92,6 +92,14 @@
   section.cat{margin-bottom:2.3rem;animation:fade .7s ease-out both}
   @keyframes fade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
   .cat-head{display:flex;align-items:center;gap:.9rem;margin-bottom:1.1rem}
+  .cat-collapsed .cat-head{margin-bottom:0}
+  .cat-collapse-btn{
+    display:flex;align-items:center;justify-content:center;
+    width:1.75rem;height:1.75rem;flex-shrink:0;
+    background:var(--glass-2);border:1px solid var(--border);border-radius:8px;
+    color:var(--t2);cursor:pointer;transition:.2s;
+  }
+  .cat-collapse-btn:hover{color:var(--accent);border-color:var(--border-hi)}
   .cat-title{font-size:1.15rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;padding-left:.6rem;border-left:3px solid var(--accent)}
   .cat-title.faith{border-color:var(--violet)} .cat-title.dr7t{border-color:var(--accent)}
   .cat-meta{font-size:.72rem;color:var(--t3)}

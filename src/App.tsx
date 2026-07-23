@@ -416,10 +416,24 @@ function GithubReposSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; 
   );
 }
 
-/* ---------- GITHUB ISSUES (open issues across your repos) ---------- */
+/* ---------- GITHUB ISSUES (collapsible + name/date sort) ---------- */
+type IssueSortField = 'name' | 'date';
+type IssueSortDir = 'asc' | 'desc';
+const ISSUES_UI_KEY = 'haven.lab.issuesUi.v1';
+
+function loadIssuesUi(): { collapsed: boolean; field: IssueSortField; dir: IssueSortDir } {
+  const d = loadJson(ISSUES_UI_KEY, { collapsed: false, field: 'date' as IssueSortField, dir: 'desc' as IssueSortDir });
+  return {
+    collapsed: !!d.collapsed,
+    field: d.field === 'name' ? 'name' : 'date',
+    dir: d.dir === 'asc' ? 'asc' : 'desc',
+  };
+}
+
 function GithubIssuesSection({ env, onRefresh }: { env: Envelope<GhIssue[]> | null; onRefresh: () => void }) {
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const [ui, setUi] = useState(loadIssuesUi);
   const issues = env?.data || [];
   const stale = !!env?.stale && issues.length > 0;
   const ago = (iso: string) => {
@@ -427,6 +441,28 @@ function GithubIssuesSection({ env, onRefresh }: { env: Envelope<GhIssue[]> | nu
     const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
     return d <= 0 ? 'today' : d === 1 ? '1d ago' : d < 30 ? d + 'd ago' : Math.floor(d / 30) + 'mo ago';
   };
+
+  const persistUi = useCallback((next: typeof ui) => {
+    setUi(next);
+    try { localStorage.setItem(ISSUES_UI_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  }, []);
+
+  const rows = useMemo(() => {
+    const copy = [...issues];
+    const mult = ui.dir === 'asc' ? 1 : -1;
+    copy.sort((a, b) => {
+      if (ui.field === 'name') {
+        const byTitle = a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
+        if (byTitle !== 0) return byTitle * mult;
+        return a.repo.localeCompare(b.repo, undefined, { sensitivity: 'base' }) * mult;
+      }
+      const ta = +new Date(a.updated_at || 0);
+      const tb = +new Date(b.updated_at || 0);
+      if (ta !== tb) return (ta - tb) * mult;
+      return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+    });
+    return copy;
+  }, [issues, ui.field, ui.dir]);
 
   const prevTs = useRef<number | null>(null);
   useEffect(() => {
@@ -442,6 +478,22 @@ function GithubIssuesSection({ env, onRefresh }: { env: Envelope<GhIssue[]> | nu
     setTimeout(() => setRefreshing(false), 20000);
   }, [onRefresh]);
 
+  const cycleSort = () => {
+    // Cycle: date desc → date asc → name asc → name desc → …
+    let field = ui.field;
+    let dir = ui.dir;
+    if (field === 'date' && dir === 'desc') dir = 'asc';
+    else if (field === 'date' && dir === 'asc') { field = 'name'; dir = 'asc'; }
+    else if (field === 'name' && dir === 'asc') dir = 'desc';
+    else { field = 'date'; dir = 'desc'; }
+    persistUi({ ...ui, field, dir });
+  };
+
+  const sortLabel =
+    ui.field === 'name'
+      ? (ui.dir === 'asc' ? 'Name A–Z' : 'Name Z–A')
+      : (ui.dir === 'asc' ? 'Date oldest' : 'Date newest');
+
   const refreshedLabel = lastRefreshed
     ? `refreshed ${lastRefreshed.getHours().toString().padStart(2, '0')}:${lastRefreshed.getMinutes().toString().padStart(2, '0')}`
     : env?.ts
@@ -451,18 +503,35 @@ function GithubIssuesSection({ env, onRefresh }: { env: Envelope<GhIssue[]> | nu
   if (!issues.length && !refreshing && !env?.error) return null;
 
   return (
-    <section className="cat">
+    <section className={'cat' + (ui.collapsed ? ' cat-collapsed' : '')}>
       <div className="cat-head">
+        <button
+          type="button"
+          className="cat-collapse-btn"
+          onClick={() => persistUi({ ...ui, collapsed: !ui.collapsed })}
+          title={ui.collapsed ? 'Expand GITHUB ISSUES' : 'Collapse GITHUB ISSUES'}
+          aria-expanded={!ui.collapsed}
+        >
+          {ui.collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        </button>
         <div className="cat-title">GITHUB ISSUES</div>
-        <div className="cat-meta">
-          {issues.length} open
-        </div>
+        <div className="cat-meta">{issues.length} open</div>
         {stale && <span className="badge-off" style={{ display: 'inline-flex' }}>offline · cached</span>}
         {env?.error && !issues.length && (
           <span className="badge-off" style={{ display: 'inline-flex' }} title={env.error}>issues error</span>
         )}
         <div className="ic-btn" style={{ display: 'flex', gap: '.4rem', alignItems: 'center' }}>
-          {refreshedLabel && !refreshing && <span className="gh-refresh-ts">{refreshedLabel}</span>}
+          {refreshedLabel && !refreshing && !ui.collapsed && (
+            <span className="gh-refresh-ts">{refreshedLabel}</span>
+          )}
+          <button
+            type="button"
+            className={'sortbtn' + (ui.field === 'name' ? ' active' : '')}
+            onClick={cycleSort}
+            title="Cycle sort: date newest → date oldest → name A–Z → name Z–A"
+          >
+            <ArrowDownAZ size={16} /> {sortLabel}
+          </button>
           <button
             className={'pill-btn gh-refresh' + (refreshing ? ' spinning' : '')}
             onClick={handleRefresh}
@@ -473,31 +542,33 @@ function GithubIssuesSection({ env, onRefresh }: { env: Envelope<GhIssue[]> | nu
           </button>
         </div>
       </div>
-      <div className="grid" style={stale ? { opacity: 0.6, filter: 'saturate(.5)' } : undefined}>
-        {issues.map((iss) => (
-          <a
-            key={iss.id || iss.html_url}
-            href={iss.html_url}
-            className={'tile repo issue ' + (iss.private_repo ? 'private' : 'public')}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <div className="ic">#</div>
-            <div className="body">
-              <div className="ttl">
-                <span>{iss.title}</span>
+      {!ui.collapsed && (
+        <div className="grid" style={stale ? { opacity: 0.6, filter: 'saturate(.5)' } : undefined}>
+          {rows.map((iss) => (
+            <a
+              key={iss.id || iss.html_url}
+              href={iss.html_url}
+              className={'tile repo issue ' + (iss.private_repo ? 'private' : 'public')}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <div className="ic">#</div>
+              <div className="body">
+                <div className="ttl">
+                  <span>{iss.title}</span>
+                </div>
+                <div className="sub">{iss.repo} · #{iss.number}</div>
+                <div className="meta">
+                  {iss.labels.slice(0, 3).map((lb) => (
+                    <span key={lb} className="chip">{lb}</span>
+                  ))}
+                  {iss.updated_at && <span className="chip">· {ago(iss.updated_at)}</span>}
+                </div>
               </div>
-              <div className="sub">{iss.repo} · #{iss.number}</div>
-              <div className="meta">
-                {iss.labels.slice(0, 3).map((lb) => (
-                  <span key={lb} className="chip">{lb}</span>
-                ))}
-                {iss.updated_at && <span className="chip">· {ago(iss.updated_at)}</span>}
-              </div>
-            </div>
-          </a>
-        ))}
-      </div>
+            </a>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
