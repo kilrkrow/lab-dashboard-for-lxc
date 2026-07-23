@@ -195,11 +195,57 @@ function Dr7Module({ env }: { env: Envelope<Dr7> | null }) {
   );
 }
 
+/* ---------- per-category sort + last-used (localStorage) ---------- */
+type CatSortMode = 'alpha' | 'recent';
+const CAT_SORT_KEY = 'haven.lab.catSort.v1';
+const APP_USED_KEY = 'haven.lab.appLastUsed.v1';
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const s = localStorage.getItem(key);
+    if (!s) return fallback;
+    return JSON.parse(s) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function appKey(app: Pick<AppItem, 'name' | 'url'>): string {
+  return `${app.name}\0${app.url || ''}`;
+}
+
+function sortApps(apps: AppItem[], mode: CatSortMode, lastUsed: Record<string, number>): AppItem[] {
+  const copy = [...apps];
+  if (mode === 'alpha') {
+    copy.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
+  } else {
+    copy.sort((a, b) => {
+      const ta = lastUsed[appKey(a)] ?? 0;
+      const tb = lastUsed[appKey(b)] ?? 0;
+      if (tb !== ta) return tb - ta;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+    });
+  }
+  return copy;
+}
+
 /* ---------- app tiles ---------- */
-function AppTile({ app, svc, grafanaData, wanDown }: { app: AppItem; svc?: boolean; grafanaData: number[]; wanDown?: boolean }) {
+function AppTile({
+  app, svc, grafanaData, wanDown, onOpen,
+}: {
+  app: AppItem; svc?: boolean; grafanaData: number[]; wanDown?: boolean; onOpen?: (app: AppItem) => void;
+}) {
   const [imgErr, setImgErr] = useState(false);
   return (
-    <a href={app.url} className="tile" target={app.url !== '#' ? '_blank' : undefined} rel="noopener noreferrer" data-svc={svc ? '1' : undefined} data-wan={app.wan ? '1' : '0'}>
+    <a
+      href={app.url}
+      className="tile"
+      target={app.url !== '#' ? '_blank' : undefined}
+      rel="noopener noreferrer"
+      data-svc={svc ? '1' : undefined}
+      data-wan={app.wan ? '1' : '0'}
+      onClick={() => onOpen?.(app)}
+    >
       <div className="ic">{app.icon && !imgErr ? <img src={ICON(app.icon)} alt={app.name} onError={() => setImgErr(true)} /> : app.name[0].toUpperCase()}</div>
       <div className="body">
         <div className="ttl">{app.name}</div>
@@ -208,6 +254,55 @@ function AppTile({ app, svc, grafanaData, wanDown }: { app: AppItem; svc?: boole
       </div>
       {svc && <span className="svc-dot"><span className={'dot' + (app.wan && wanDown ? ' bad' : '')} /></span>}
     </a>
+  );
+}
+
+/* ---------- category section with sort toggle ---------- */
+function CategorySection({
+  cat, sortMode, onToggleSort, lastUsed, onAppOpen, grafanaData, wanDown,
+}: {
+  cat: Category;
+  sortMode: CatSortMode;
+  onToggleSort: () => void;
+  lastUsed: Record<string, number>;
+  onAppOpen: (app: AppItem) => void;
+  grafanaData: number[];
+  wanDown: boolean;
+}) {
+  const apps = useMemo(
+    () => sortApps(cat.apps, sortMode, lastUsed),
+    [cat.apps, sortMode, lastUsed],
+  );
+  const alpha = sortMode === 'alpha';
+  return (
+    <section className="cat">
+      <div className="cat-head">
+        <div className={'cat-title' + (cat.faith ? ' faith' : '')}>{cat.name}</div>
+        <div className="cat-meta">{cat.apps.length} apps</div>
+        <div className="ic-btn">
+          <button
+            type="button"
+            className={'sortbtn' + (alpha ? ' active' : '')}
+            onClick={onToggleSort}
+            title={alpha ? 'Sorted A–Z — click for last used' : 'Sorted by last used — click for A–Z'}
+          >
+            <ArrowDownAZ size={16} /> {alpha ? 'A–Z' : 'Last used'}
+          </button>
+        </div>
+      </div>
+      <div className="grid">
+        {apps.map((a) => (
+          <AppTile
+            key={appKey(a)}
+            app={a}
+            svc={cat.svc}
+            grafanaData={grafanaData}
+            wanDown={wanDown}
+            onOpen={onAppOpen}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -315,7 +410,7 @@ const BANGS: Record<string, { n: string; u: (q: string) => string }> = {
   '!npm': { n: 'npm', u: (q) => 'https://www.npmjs.com/search?q=' + q },
   '!maps': { n: 'Maps', u: (q) => 'https://www.google.com/maps/search/' + q },
 };
-function CommandPalette({ index }: { index: CmdItem[] }) {
+function CommandPalette({ index, onOpenApp }: { index: CmdItem[]; onOpenApp?: (app: AppItem) => void }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
@@ -329,7 +424,13 @@ function CommandPalette({ index }: { index: CmdItem[] }) {
     return base;
   }, [q, index]);
   useEffect(() => { setSel(0); }, [q]);
-  const go = useCallback((r?: CmdItem) => { if (r && r.url && r.url !== '#') window.open(r.url, '_blank', 'noopener'); setOpen(false); }, []);
+  const go = useCallback((r?: CmdItem) => {
+    if (r && r.url && r.url !== '#') {
+      if (r.type === 'app' && onOpenApp) onOpenApp({ name: r.label, url: r.url, icon: r.icon });
+      window.open(r.url, '_blank', 'noopener');
+    }
+    setOpen(false);
+  }, [onOpenApp]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setOpen((o) => !o); return; }
@@ -586,6 +687,27 @@ export default function App() {
   const [cfgErr, setCfgErr] = useState(false);
   const [cfgEditorOpen, setCfgEditorOpen] = useState(false);
 
+  // Per-category sort mode + last-used map (persist across sessions)
+  const [catSort, setCatSort] = useState<Record<string, CatSortMode>>(() => loadJson(CAT_SORT_KEY, {}));
+  const [lastUsed, setLastUsed] = useState<Record<string, number>>(() => loadJson(APP_USED_KEY, {}));
+
+  const toggleCatSort = useCallback((catName: string) => {
+    setCatSort((prev) => {
+      const cur = prev[catName] ?? 'alpha';
+      const next = { ...prev, [catName]: (cur === 'alpha' ? 'recent' : 'alpha') as CatSortMode };
+      try { localStorage.setItem(CAT_SORT_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
+  const markAppUsed = useCallback((app: AppItem) => {
+    setLastUsed((prev) => {
+      const next = { ...prev, [appKey(app)]: Date.now() };
+      try { localStorage.setItem(APP_USED_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
   // Manual refresh trigger for GitHub (also forces broker cache bust via ?refresh=1)
   const [repoRefreshKey, setRepoRefreshKey] = useState(0);
   const [repos, setRepos] = useState<Envelope<Repo[]> | null>(null);
@@ -679,15 +801,21 @@ export default function App() {
 
       <main>
         {cfg.categories.map((cat) => (
-          <section className="cat" key={cat.name}>
-            <div className="cat-head"><div className={'cat-title' + (cat.faith ? ' faith' : '')}>{cat.name}</div><div className="cat-meta">{cat.apps.length} apps</div></div>
-            <div className="grid">{cat.apps.map((a) => <AppTile key={a.name} app={a} svc={cat.svc} grafanaData={grafana} wanDown={wanDown} />)}</div>
-          </section>
+          <CategorySection
+            key={cat.name}
+            cat={cat}
+            sortMode={catSort[cat.name] ?? 'alpha'}
+            onToggleSort={() => toggleCatSort(cat.name)}
+            lastUsed={lastUsed}
+            onAppOpen={markAppUsed}
+            grafanaData={grafana}
+            wanDown={wanDown}
+          />
         ))}
         <GithubSection env={repos} onRefresh={triggerRepoRefresh} />
       </main>
 
-      <CommandPalette index={cmdIndex} />
+      <CommandPalette index={cmdIndex} onOpenApp={markAppUsed} />
 
       {cfgEditorOpen && (
         <ConfigEditor
