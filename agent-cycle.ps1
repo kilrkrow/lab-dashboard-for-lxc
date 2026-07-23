@@ -96,17 +96,31 @@ if (-not $SkipBroker -and $env:BROKER_REMOTE_DIR) {
     $user = $env:LXC_USER
     $rhost = $env:LXC_HOST
 
+    # Prod LXC runs: node /opt/havenlab-broker/server.mjs
+    Write-Host "Build broker (tsc)..." -ForegroundColor DarkGray
+    npm run broker:build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "broker:build failed" -ForegroundColor Red
+        exit 1
+    }
+    $builtJs = Join-Path $root "dist-server\broker.js"
+    if (-not (Test-Path $builtJs)) {
+        Write-Host "Missing $builtJs after broker:build" -ForegroundColor Red
+        exit 1
+    }
+
     $mk = Invoke-NativeExit -FilePath "ssh" -ArgumentList ($base + @(
         "${user}@${rhost}",
-        "mkdir -p '$remoteDir/server' '$remoteDir/dist-server' 2>/dev/null; true"
+        "mkdir -p '$remoteDir' 2>/dev/null; true"
     ))
     if ($mk -ne 0) {
         Write-Host "WARN: could not mkdir broker dir (exit $mk)" -ForegroundColor Yellow
     }
 
+    # Upload as server.mjs (matches live process path)
     $scp1 = Invoke-NativeExit -FilePath "scp" -ArgumentList ($base + @(
-        (Join-Path $root "server\broker.ts"),
-        "${user}@${rhost}:${remoteDir}/server/broker.ts"
+        $builtJs,
+        "${user}@${rhost}:${remoteDir}/server.mjs"
     ))
     if ($scp1 -ne 0) {
         Write-Host "Broker scp failed (exit $scp1)" -ForegroundColor Red
@@ -116,12 +130,7 @@ if (-not $SkipBroker -and $env:BROKER_REMOTE_DIR) {
         }
         exit 1
     }
-
-    if (Test-Path (Join-Path $root "dist\index.html")) {
-        Write-Host "Sync dist/ into broker remote..." -ForegroundColor DarkGray
-        $localDist = Join-Path $root "dist"
-        Invoke-SyncToRemote -LocalDir $localDist -RemoteUser $user -RemoteHost $rhost -RemotePath "$remoteDir/dist" -Delete
-    }
+    Write-Host "Uploaded server.mjs" -ForegroundColor Green
 
     if ($env:BROKER_RESTART_CMD) {
         Write-Host "Restart: $($env:BROKER_RESTART_CMD)" -ForegroundColor DarkGray
@@ -135,7 +144,8 @@ if (-not $SkipBroker -and $env:BROKER_REMOTE_DIR) {
         Start-Sleep -Seconds 2
     }
     else {
-        Write-Host "No BROKER_RESTART_CMD - broker code copied; restart manually if needed." -ForegroundColor Yellow
+        Write-Host "No BROKER_RESTART_CMD set. Restart broker manually, e.g.:" -ForegroundColor Yellow
+        Write-Host "  systemctl restart <unit>   OR   kill and re-run node server.mjs" -ForegroundColor Gray
     }
 }
 else {
