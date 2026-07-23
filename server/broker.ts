@@ -359,25 +359,42 @@ async function fetchDr7(force = false): Promise<Envelope<Dr7Data>> {
       return fail(unifiLastError);
     }
 
-    // WAN from stat/health subsystem (old unifi.mjs) — more reliable on UDR7 than uplink alone
+    // --- WAN throughput: same source as UniFiHUD GetWanRatesAsync ---
+    // Prefer gateway from stat/device + uplink['rx_bytes-r'|'tx_bytes-r'] (bytes/sec → Mbps).
+    // stat/health is only used for status / wan_ip / latency (not primary rates).
     const wanH = (health.find((h) => h.subsystem === 'wan') || {}) as Record<string, unknown>;
-    const gw = (devices.find((d) => /UDR|UDM|gateway/i.test(String(d.model || d.type || '')))
-      || devices.find((d) => d.is_gateway)
+
+    // UniFiHUD order: is_gateway → type ugw|udm → model UDR|UDM|UDW
+    const gw = (devices.find((d) => d.is_gateway)
+      || devices.find((d) => d.type === 'ugw' || d.type === 'udm')
+      || devices.find((d) => /UDR|UDM|UDW/i.test(String(d.model || '')))
+      || devices.find((d) => /UDR|UDM|gateway/i.test(String(d.model || d.type || '')))
       || devices[0]
       || {}) as Record<string, unknown>;
 
     const uplink = (gw.uplink || {}) as Record<string, unknown>;
-    const downFromHealth = num(wanH['rx_bytes-r']) * 8 / 1e6;
-    const upFromHealth = num(wanH['tx_bytes-r']) * 8 / 1e6;
-    const downFromUp = num(uplink['rx_bytes-r']) * 8 / 1e6;
-    const upFromUp = num(uplink['tx_bytes-r']) * 8 / 1e6;
-    const downMbps = +(downFromHealth || downFromUp).toFixed(1);
-    const upMbps = +(upFromHealth || upFromUp).toFixed(1);
+    const rxRate = num(uplink['rx_bytes-r']); // bytes/sec (download on WAN)
+    const txRate = num(uplink['tx_bytes-r']); // bytes/sec (upload on WAN)
+    // Exact UniFiHUD formula: rate * 8 / 1_000_000
+    let downMbps = rxRate * 8 / 1_000_000;
+    let upMbps = txRate * 8 / 1_000_000;
+
+    // Fallback only if uplink rates missing entirely (HUD would return null)
+    if (rxRate === 0 && txRate === 0) {
+      const hRx = num(wanH['rx_bytes-r']);
+      const hTx = num(wanH['tx_bytes-r']);
+      if (hRx > 0 || hTx > 0) {
+        downMbps = hRx * 8 / 1_000_000;
+        upMbps = hTx * 8 / 1_000_000;
+      }
+    }
+    downMbps = +downMbps.toFixed(2);
+    upMbps = +upMbps.toFixed(2);
 
     const wanStatus =
-      wanH.status === 'ok' || wanH['wan_ip']
+      wanH.status === 'ok' || wanH['wan_ip'] || uplink.ip
         ? 'up'
-        : (wanH.status ? 'down' : (downMbps > 0 || upMbps > 0 ? 'up' : 'unknown'));
+        : (wanH.status ? 'down' : (downMbps > 0 || upMbps > 0 || Object.keys(uplink).length > 0 ? 'up' : 'unknown'));
 
     const wired = sta.filter((s) => s.is_wired).length;
     const wireless = sta.length - wired;
