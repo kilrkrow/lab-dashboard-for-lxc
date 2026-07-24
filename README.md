@@ -2,6 +2,8 @@
 
 Glassmorphism homelab dashboard for a lightweight Proxmox LXC: static UI + a small **Node broker** for live data (UniFi DR7, GitHub, Proxmox, AdGuard).
 
+![Haven Lab Dashboard](public/screenshot.png)
+
 ## Architecture (current)
 
 | Piece | Role |
