@@ -116,7 +116,11 @@
   .tile .ic{width:42px;height:42px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
     background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--accent);font-weight:700;font-size:1.15rem;overflow:hidden}
   .tile .ic img{width:24px;height:24px;object-fit:contain}
+  /* Custom repo icons (assets/icon.png) — fill the mark, keep transparent art crisp */
+  .tile.repo .ic.has-img{background:rgba(0,0,0,.25);padding:3px}
+  .tile.repo .ic.has-img img{width:100%;height:100%;object-fit:contain}
   .tile:hover .ic{background:var(--accent);color:#04141a;border-color:var(--accent)}
+  .tile.repo:hover .ic.has-img{background:rgba(0,0,0,.35)}
   .tile .body{min-width:0;flex:1}
   .tile .ttl{font-weight:600;font-size:.97rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:.4rem}
   .tile .sub{font-size:.76rem;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.1rem}

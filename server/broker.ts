@@ -464,13 +464,21 @@ interface GHRepo {
   name: string; full_name: string; description: string | null; html_url: string;
   language: string | null; pushed_at: string; stargazers_count: number;
   private: boolean; fork: boolean; archived: boolean; open_issues_count: number;
+  default_branch?: string;
 }
 interface RepoOut {
-  name: string; description: string | null; html_url: string; language: string | null;
+  name: string; full_name: string; description: string | null; html_url: string; language: string | null;
   pushed_at: string; stars: number; private: boolean; fork: boolean; archived: boolean;
   open_prs: number; open_issues: number;
+  /** Relative broker path when assets/icon.png (or icon.png) exists on the default branch */
+  icon_url: string | null;
 }
 let reposCache: Envelope<RepoOut[]> | null = null;
+
+// In-memory icon bytes (private repos need the PAT; browser <img> can't send it)
+const ICON_TTL_MS = 60 * 60 * 1000;
+const iconCache = new Map<string, { status: number; body?: Buffer; type?: string; ts: number }>();
+const ICON_PATHS = ['assets/icon.png', 'icon.png', 'assets/icon.jpg', 'assets/logo.png'];
 
 const GH_HEADERS = (token: string) => ({
   authorization: `Bearer ${token}`,
@@ -494,6 +502,10 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
   // Return warm cache unless forced (UI refresh button passes ?refresh=1)
   if (!force && reposCache?.ok && reposCache.data && reposCache.ts && (Date.now() - reposCache.ts) < 30_000) {
     return reposCache;
+  }
+  if (force) {
+    // Icon files may have changed with a push — drop byte cache so next /api/repo-icon is fresh
+    iconCache.clear();
   }
 
   try {
@@ -523,12 +535,20 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
       } catch { return 0; }
     }));
 
+    // Probe for assets/icon.png (etc.) in parallel — private-safe via Contents API
+    const hasIcon = await Promise.all(all.map(async (r) => {
+      try {
+        return await repoHasIconFile(r.full_name, hdr);
+      } catch { return false; }
+    }));
+
     // GitHub open_issues_count includes PRs — subtract so UI "issues" is issues-only
     const out: RepoOut[] = all.map((r, i) => {
       const openPrs = prCounts[i];
       const issuesOnly = Math.max(0, (r.open_issues_count ?? 0) - openPrs);
       return {
         name: r.name,
+        full_name: r.full_name,
         description: r.description,
         html_url: r.html_url,
         language: r.language,
@@ -539,6 +559,7 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
         archived: r.archived,
         open_prs: openPrs,
         open_issues: issuesOnly,
+        icon_url: hasIcon[i] ? `/api/repo-icon/${r.full_name}` : null,
       };
     });
 
@@ -549,6 +570,58 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
     if (reposCache?.data) return { ...stale(reposCache.data), error: String(err) };
     return fail(String(err));
   }
+}
+
+/** True if any known icon path exists on the repo default branch. */
+async function repoHasIconFile(fullName: string, hdr: Record<string, string>): Promise<boolean> {
+  for (const filePath of ICON_PATHS) {
+    const res = await rawFetch(
+      `https://api.github.com/repos/${fullName}/contents/${filePath}`,
+      { headers: hdr },
+    );
+    if (res.status === 200) return true;
+    if (res.status !== 404) break; // auth / rate limit — stop probing this repo
+  }
+  return false;
+}
+
+/**
+ * Fetch icon bytes for owner/repo (uses GITHUB_TOKEN so private repos work).
+ * Cached in memory; 404s cached too so the letter fallback stays cheap.
+ */
+async function fetchRepoIconBytes(owner: string, repo: string): Promise<{ status: number; body?: Buffer; type?: string }> {
+  const key = `${owner}/${repo}`.toLowerCase();
+  const cached = iconCache.get(key);
+  if (cached && Date.now() - cached.ts < ICON_TTL_MS) {
+    return { status: cached.status, body: cached.body, type: cached.type };
+  }
+  if (!GH_TOKEN_RO) {
+    iconCache.set(key, { status: 503, ts: Date.now() });
+    return { status: 503 };
+  }
+  const hdr = GH_HEADERS(GH_TOKEN_RO);
+  const fullName = `${owner}/${repo}`;
+  for (const filePath of ICON_PATHS) {
+    try {
+      const res = await rawFetch(
+        `https://api.github.com/repos/${fullName}/contents/${filePath}`,
+        { headers: hdr },
+      );
+      if (res.status !== 200) continue;
+      const j = parseJson<{ content?: string; encoding?: string; name?: string }>(res.body);
+      if (!j?.content || j.encoding !== 'base64') continue;
+      const buf = Buffer.from(j.content.replace(/\n/g, ''), 'base64');
+      const lower = (j.name || filePath).toLowerCase();
+      const type = lower.endsWith('.jpg') || lower.endsWith('.jpeg') ? 'image/jpeg'
+        : lower.endsWith('.svg') ? 'image/svg+xml'
+        : lower.endsWith('.webp') ? 'image/webp'
+        : 'image/png';
+      iconCache.set(key, { status: 200, body: buf, type, ts: Date.now() });
+      return { status: 200, body: buf, type };
+    } catch { /* try next path */ }
+  }
+  iconCache.set(key, { status: 404, ts: Date.now() });
+  return { status: 404 };
 }
 
 // ─── /api/issues ──────────────────────────────────────────────────────────────
@@ -851,13 +924,35 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/issues')   return json(await fetchIssues(force));
     if (pathname === '/api/proxmox')  return json(await fetchProxmox());
     if (pathname === '/api/adguard')  return json(await fetchAdguard());
+
+    // GET /api/repo-icon/:owner/:repo — private-safe icon proxy (assets/icon.png)
+    const iconMatch = pathname.match(/^\/api\/repo-icon\/([^/]+)\/([^/]+)\/?$/);
+    if (iconMatch && req.method === 'GET') {
+      const owner = decodeURIComponent(iconMatch[1]);
+      const repo = decodeURIComponent(iconMatch[2]);
+      if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
+        res.writeHead(400); return res.end();
+      }
+      const icon = await fetchRepoIconBytes(owner, repo);
+      if (icon.status !== 200 || !icon.body) {
+        res.writeHead(icon.status === 503 ? 503 : 404, { 'cache-control': 'public, max-age=300' });
+        return res.end();
+      }
+      res.writeHead(200, {
+        'content-type': icon.type || 'image/png',
+        'cache-control': 'public, max-age=3600',
+        'access-control-allow-origin': '*',
+      });
+      return res.end(icon.body);
+    }
+
     if (pathname === '/api/health') {
       return json({
         ok: true,
         unifi: { url: UNIFI_URL, base: unifiResolvedBase, lastError: unifiLastError },
         github: { ro: !!GH_TOKEN_RO, rw: !!GH_TOKEN_RW && GH_TOKEN_RW !== GH_TOKEN_RO ? 'separate' : !!GH_TOKEN_RW },
 
-        cache: { dr7: !!dr7Cache, repos: !!reposCache },
+        cache: { dr7: !!dr7Cache, repos: !!reposCache, icons: iconCache.size },
       });
     }
 

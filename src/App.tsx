@@ -14,6 +14,20 @@ const ICON = (s: string) => /^(https?:|\/|data:)/.test(s) ? s : `https://cdn.jsd
 const LANG_COLOR: Record<string, string> = { TypeScript: '#3178c6', Python: '#3572A5', 'C#': '#178600', JavaScript: '#f1e05a', Shell: '#89e051' };
 const LAT = 44.6587, LON = -123.84;
 
+/** Repo tile / cmdk mark: custom assets/icon.png via broker proxy, else first letter. */
+function RepoMark({ name, iconUrl, className = 'ic' }: { name: string; iconUrl?: string | null; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  const letter = (name[0] || '?').toUpperCase();
+  if (!iconUrl || failed) {
+    return <div className={className}>{letter}</div>;
+  }
+  return (
+    <div className={className + ' has-img'}>
+      <img src={iconUrl} alt="" onError={() => setFailed(true)} />
+    </div>
+  );
+}
+
 /* ---------- generic polling hook ---------- */
 function usePoll<T>(path: string, intervalMs: number): Envelope<T> | null {
   const [env, setEnv] = useState<Envelope<T> | null>(null);
@@ -393,7 +407,7 @@ function GithubReposSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; 
             rel="noopener noreferrer"
             title={r.private ? 'Private repository' : 'Public repository'}
           >
-            <div className="ic">{r.name[0].toUpperCase()}</div>
+            <RepoMark name={r.name} iconUrl={r.icon_url} />
             <div className="body">
               <div className="ttl">
                 <span>{r.name}</span>
@@ -626,7 +640,13 @@ function CommandPalette({ index, onOpenApp }: { index: CmdItem[]; onOpenApp?: (a
         <div className="cmdk-list">
           {results.map((r, i) => (
             <div key={i} className={'cmdk-row' + (i === sel ? ' sel' : '')} onClick={() => go(r)} onMouseEnter={() => setSel(i)}>
-              <div className="ric">{r.icon ? <img src={ICON(r.icon)} alt="" /> : r.type === 'repo' ? '{ }' : r.type === 'web' ? '⌕' : r.label[0].toUpperCase()}</div>
+              <div className="ric">
+                {r.icon
+                  ? <img src={ICON(r.icon)} alt="" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  : r.type === 'repo' ? (r.label[0] || '?').toUpperCase()
+                  : r.type === 'web' ? '⌕'
+                  : r.label[0].toUpperCase()}
+              </div>
               <div className="rl"><div className="a">{r.label}</div><div className="b">{r.sub}</div></div>
               <span className="tag">{r.tag || r.type}</span>
             </div>
@@ -943,7 +963,13 @@ export default function App() {
   const cmdIndex: CmdItem[] = useMemo(() => {
     const items: CmdItem[] = [];
     cfg?.categories.forEach((c) => c.apps.forEach((a) => items.push({ type: 'app', label: a.name, sub: `${c.name} · ${a.description || ''}`, url: a.url, icon: a.icon })));
-    (repos?.data || []).forEach((r) => items.push({ type: 'repo', label: r.name, sub: (r.private ? 'private' : `${r.open_issues} issues`) + ` · ${r.description || ''}`, url: r.html_url }));
+    (repos?.data || []).forEach((r) => items.push({
+      type: 'repo',
+      label: r.name,
+      sub: (r.private ? 'private' : `${r.open_issues} issues`) + ` · ${r.description || ''}`,
+      url: r.html_url,
+      icon: r.icon_url || null,
+    }));
     return items;
   }, [cfg, repos]);
 

@@ -33,11 +33,16 @@ GitHub array will break the frontend's `getEnvelope<Repo[]>` parsing.
 
 # Schema
 
-Response is `Envelope<Repo[]>`. Each `Repo`: `name, description, html_url,
-language, pushed_at, stars, private, fork, archived, open_prs, open_issues`
-(mapped from GitHub's `stargazers_count` / `open_issues_count` + the derived
-`open_prs`).
+Response is `Envelope<Repo[]>`. Each `Repo`: `name, full_name, description,
+html_url, language, pushed_at, stars, private, fork, archived, open_prs,
+open_issues, icon_url` (mapped from GitHub's `stargazers_count` /
+`open_issues_count` + derived `open_prs`).
+
+`icon_url` is set when the default branch has `assets/icon.png` (or
+`icon.png` / a few fallbacks). The UI loads that path; the broker serves the
+bytes at `GET /api/repo-icon/:owner/:repo` so **private** repos work (PAT stays
+on the server). Manual refresh (`?refresh=1`) clears the icon byte cache.
 
 # Citations
-- `server/broker.ts` → `fetchRepos`
-- `src/api.ts` → `Repo` interface; `src/App.tsx` → `getEnvelope<Repo[]>` poll
+- `server/broker.ts` → `fetchRepos`, `fetchRepoIconBytes`
+- `src/api.ts` → `Repo` interface; `src/App.tsx` → `RepoMark` + `getEnvelope<Repo[]>` poll

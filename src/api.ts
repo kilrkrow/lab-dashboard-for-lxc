@@ -1,9 +1,14 @@
 // Typed client for the local broker. Every call returns an envelope so the UI
 // can tell live data from cached/stale (offline) data.
 export interface Repo {
-  name: string; description: string | null; html_url: string; language: string | null;
+  name: string;
+  /** owner/name — used for private-safe icon proxy */
+  full_name?: string;
+  description: string | null; html_url: string; language: string | null;
   pushed_at: string; stars: number; private: boolean; fork: boolean; archived: boolean;
   open_prs: number; open_issues: number;
+  /** Broker path e.g. /api/repo-icon/owner/repo when assets/icon.png exists */
+  icon_url?: string | null;
 }
 export interface GhIssue {
   id: number; number: number; title: string; html_url: string;
