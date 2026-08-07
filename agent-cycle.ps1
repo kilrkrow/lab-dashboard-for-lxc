@@ -155,8 +155,10 @@ else {
 
 Write-Host ""
 Write-Host "[4/4] smoke" -ForegroundColor Cyan
-$smokeArgs = @()
-if ($StrictApi) { $smokeArgs += "-StrictApi" }
+# Hashtable splat so -StrictApi binds as a switch (string "@('-StrictApi')" would
+# bind positionally to -BaseUrl and break the whole smoke suite).
+$smokeArgs = @{}
+if ($StrictApi) { $smokeArgs["StrictApi"] = $true }
 & "$root\smoke.ps1" @smokeArgs
 $smokeCode = $LASTEXITCODE
 
