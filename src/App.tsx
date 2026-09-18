@@ -179,7 +179,7 @@ function Dr7Module({ env }: { env: Envelope<Dr7> | null }) {
             <div className="rate up"><span className="ar">↑</span> {down && d ? Math.round(d.wan.up_mbps) : '—'}<small> Mbps</small></div>
           </div>
           <DualSpark down={hist.current.down} up={hist.current.up} />
-          <div className="wanrow">{wanLed}<b style={{ color: 'var(--t1)' }}>{down ? 'Online' : 'WAN DOWN'}</b> · {down ? `${d?.wan.ip || ''} · ${d?.wan.port || ''}` : 'no WAN · failover'} · {down && d?.wan.latency_ms != null ? `${d.wan.latency_ms}ms` : '—'}</div>
+          <div className="wanrow">{wanLed}<b style={{ color: 'var(--t1)' }}>{down ? 'Online' : 'WAN DOWN'}</b> · {down ? `${d?.wan.ip || ''} · ${d?.wan.port || ''}` : 'no WAN · failover'} · {down && d?.wan.latency_ms != null ? `${d.wan.latency_ms}ms` : '—'}{d?.wan.stale ? <span title={d.wan.error}> · dish cached</span> : null}</div>
         </div>
         <div className="dr7-col">
           <span className="k">WiFi 7 radios</span>

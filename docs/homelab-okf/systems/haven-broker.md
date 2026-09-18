@@ -36,7 +36,9 @@ them, and (b) reach LAN services the browser can't.
 All via env / `.env` (see `.env.example`). Secrets never reach the browser.
 Key vars: `UNIFI_URL`/`UNIFI_API_KEY` (or `UNIFI_USER`/`UNIFI_PASS`),
 `PROXMOX_URL`/`PROXMOX_TOKEN`/`PROXMOX_NODE`, `ADGUARD_URL`/`ADGUARD_USER`/
-`ADGUARD_PASS`, `GITHUB_TOKEN`/`GITHUB_USER`, `CONFIG_PATH`, `PORT`.
+`ADGUARD_PASS`, `STARLINK`/`STARLINK_HOST` (wan-glass aliases `WANGLASS_STARLINK` /
+`WANGLASS_STARLINK_HOST`; dish default `192.168.100.1:9200`),
+`GITHUB_TOKEN`/`GITHUB_USER`, `CONFIG_PATH`, `PORT`.
 
 ## Resilience model
 
