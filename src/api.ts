@@ -16,7 +16,10 @@ export interface GhIssue {
 }
 export interface Radio { band: string; clients: number; util_pct: number; }
 export interface Dr7 {
-  wan: { status: string; down_mbps: number; up_mbps: number; latency_ms: number | null; ip: string | null; port: string };
+  wan: {
+    status: string; down_mbps: number; up_mbps: number; latency_ms: number | null; ip: string | null; port: string;
+    source?: 'starlink' | 'unifi'; stale?: boolean; error?: string;
+  };
   clients: { total: number; wired: number; wireless: number };
   radios: Radio[];
   gateway: { cpu_pct: number | null; mem_pct: number | null; temp_c: number | null; uptime_days: number | null };

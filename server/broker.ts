@@ -23,6 +23,11 @@
  *   ADGUARD_URL      http://192.168.1.20
  *   ADGUARD_USER     admin
  *   ADGUARD_PASS     <password>
+ *   STARLINK / STARLINK_ENABLED / WANGLASS_STARLINK
+ *                    enable dish WAN rates (1/true/on)
+ *   STARLINK_HOST / WANGLASS_STARLINK_HOST
+ *                    dish host (default 192.168.100.1; host:port allowed)
+ *   STARLINK_PORT    gRPC status port (default 9200)
  *   CONFIG_PATH      /etc/haven/config.json        (default: ../public/config.json)
  *   PORT             3000
  */
@@ -32,6 +37,12 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  fetchStarlinkSample,
+  loadStarlinkSettings,
+  starlinkHealth,
+  type StarlinkFetchResult,
+} from './starlink.js';
 
 // ─── env helpers ───────────────────────────────────────────────────────────────
 const e = (k: string, fb = '') => process.env[k] ?? fb;
@@ -81,6 +92,7 @@ const AG_URL        = normalizeUrl(_agHost, 'http');
 const AG_USER       = e('ADGUARD_USER',  'admin');
 const AG_PASS       = e('ADGUARD_PASS');
 const PORT          = parseInt(e('PORT', '3000'), 10);
+const STARLINK      = loadStarlinkSettings();
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR   = path.resolve(__dirname, '../dist');
@@ -273,8 +285,21 @@ async function unifiGetJson(
 
 // ─── /api/dr7 ─────────────────────────────────────────────────────────────────
 // Matches src/api.ts Dr7 + live lib/unifi.mjs field mapping
+interface Dr7Wan {
+  status: string;
+  down_mbps: number;
+  up_mbps: number;
+  latency_ms: number | null;
+  ip: string | null;
+  port: string;
+  /** Preferential WAN meter source. Starlink when enabled and sampled. */
+  source?: 'starlink' | 'unifi';
+  /** Last-good dish sample while the live poll failed. */
+  stale?: boolean;
+  error?: string;
+}
 interface Dr7Data {
-  wan: { status: string; down_mbps: number; up_mbps: number; latency_ms: number | null; ip: string | null; port: string };
+  wan: Dr7Wan;
   clients: { total: number; wired: number; wireless: number };
   radios: Array<{ band: string; clients: number; util_pct: number }>;
   gateway: { cpu_pct: number | null; mem_pct: number | null; temp_c: number | null; uptime_days: number | null };
@@ -283,7 +308,54 @@ interface Dr7Data {
 
 let dr7Cache: Envelope<Dr7Data> | null = null;
 
-async function fetchDr7(force = false): Promise<Envelope<Dr7Data>> {
+function emptyDr7(): Dr7Data {
+  return {
+    wan: { status: 'unknown', down_mbps: 0, up_mbps: 0, latency_ms: null, ip: null, port: 'Starlink', source: 'starlink' },
+    clients: { total: 0, wired: 0, wireless: 0 },
+    radios: [],
+    gateway: { cpu_pct: null, mem_pct: null, temp_c: null, uptime_days: null },
+    poe: { used_w: 0, max_w: 15.4 },
+  };
+}
+
+function applyStarlinkToDr7(data: Dr7Data, sl: StarlinkFetchResult | null): Dr7Data {
+  if (!sl) return data;
+  if (!sl.sample) {
+    if (!sl.error) return data;
+    return { ...data, wan: { ...data.wan, source: data.wan.source ?? 'unifi', error: sl.error } };
+  }
+  return {
+    ...data,
+    wan: {
+      ...data.wan,
+      down_mbps: sl.sample.downMbps,
+      up_mbps: sl.sample.upMbps,
+      latency_ms: sl.sample.latencyMs,
+      status: sl.sample.connected ? 'up' : 'down',
+      port: 'Starlink',
+      source: 'starlink',
+      stale: sl.stale,
+      error: sl.error ?? undefined,
+    },
+  };
+}
+
+function mergeStarlinkWan(unifi: Envelope<Dr7Data>, sl: StarlinkFetchResult | null): Envelope<Dr7Data> {
+  if (!sl) return unifi;
+  if (unifi.data) {
+    const data = applyStarlinkToDr7(unifi.data, sl);
+    if (sl.stale && sl.error && !unifi.error) return { ...unifi, data, error: sl.error };
+    return { ...unifi, data };
+  }
+  if (sl.sample) {
+    const data = applyStarlinkToDr7(emptyDr7(), sl);
+    return sl.stale ? stale(data) : ok(data);
+  }
+  return unifi;
+}
+
+/** UniFi clients/radios/gateway/PoE. WAN rates come from Starlink when enabled. */
+async function fetchDr7FromUnifi(force = false): Promise<Envelope<Dr7Data>> {
   if (!UNIFI_URL) return fail('UNIFI_URL/UNIFI_HOST not set');
   if (!UNIFI_API_KEY && !(UNIFI_USER && UNIFI_PASS)) {
     return fail('Set UNIFI_API_KEY or UNIFI_USER/UNIFI_PASS');
@@ -437,6 +509,7 @@ async function fetchDr7(force = false): Promise<Envelope<Dr7Data>> {
         latency_ms: wanH.latency != null ? num(wanH.latency, 0) : null,
         ip: (wanH['wan_ip'] as string) || (uplink.ip as string) || null,
         port: uplink.port_idx != null ? `port ${uplink.port_idx}` : '10G SFP+',
+        source: 'unifi',
       },
       clients: { total: sta.length, wired, wireless },
       radios,
@@ -457,6 +530,18 @@ async function fetchDr7(force = false): Promise<Envelope<Dr7Data>> {
     if (dr7Cache?.data) return { ...stale(dr7Cache.data), error: unifiLastError };
     return fail(unifiLastError);
   }
+}
+
+async function fetchDr7(force = false): Promise<Envelope<Dr7Data>> {
+  const starlinkP = STARLINK.enabled
+    ? fetchStarlinkSample(STARLINK).catch((err): StarlinkFetchResult => ({
+        sample: null,
+        stale: true,
+        error: err instanceof Error ? err.message : String(err),
+      }))
+    : null;
+  const unifi = await fetchDr7FromUnifi(force);
+  return mergeStarlinkWan(unifi, starlinkP ? await starlinkP : null);
 }
 
 // ─── /api/repos ───────────────────────────────────────────────────────────────
@@ -950,6 +1035,9 @@ const server = http.createServer(async (req, res) => {
       return json({
         ok: true,
         unifi: { url: UNIFI_URL, base: unifiResolvedBase, lastError: unifiLastError },
+        starlink: STARLINK.enabled
+          ? { enabled: true, host: STARLINK.host, port: STARLINK.port, ...starlinkHealth() }
+          : { enabled: false },
         github: { ro: !!GH_TOKEN_RO, rw: !!GH_TOKEN_RW && GH_TOKEN_RW !== GH_TOKEN_RO ? 'separate' : !!GH_TOKEN_RW },
 
         cache: { dr7: !!dr7Cache, repos: !!reposCache, icons: iconCache.size },
@@ -995,6 +1083,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[havenlab-broker] :${PORT}  config=${CONFIG_PATH}`);
   console.log(`  UniFi: ${UNIFI_URL} ${UNIFI_API_KEY ? '(API key)' : UNIFI_USER ? '(user/pass)' : '(no auth)'}`);
+  console.log(`  Starlink: ${STARLINK.enabled ? `${STARLINK.host}:${STARLINK.port}` : 'disabled'}`);
   console.log(`  Proxmox: ${PX_URL} node=${PX_NODE} token=${PX_TOKEN ? 'set' : 'MISSING'}`);
   console.log(`  AdGuard: ${AG_URL} user=${AG_USER} pass=${AG_PASS ? 'set' : 'MISSING'}`);
   console.log(`  Dist:  ${DIST_DIR}`);

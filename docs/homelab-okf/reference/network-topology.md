@@ -16,6 +16,7 @@ repo — the real values live in the broker's uncommitted `.env`.
 | Upstream | Documented address | Protocol | Reachability |
 |---|---|---|---|
 | UniFi OS (DR7) | `https://192.168.1.1` | HTTPS (self-signed) | LAN-only |
+| Starlink dish | `192.168.100.1:9200` | gRPC / HTTP/2 (plaintext) | LAN-only (when `STARLINK=1`) |
 | Proxmox VE | `https://192.168.1.10:8006` | HTTPS | LAN-only |
 | AdGuard Home | `http://192.168.1.20` | HTTP | LAN-only |
 | GitHub REST | `https://api.github.com` | HTTPS | Public internet |

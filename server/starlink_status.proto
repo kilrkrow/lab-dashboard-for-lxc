@@ -1,0 +1,60 @@
+// Trimmed SpaceX.API.Device surface used for the Haven WAN meter.
+// Field numbers match the current dish gRPC API (same semantics as
+// wan-glass `src/WanGlass.Unifi/Starlink/starlink_status.proto`):
+//   Request.get_status            = 1004
+//   Response.dish_get_status      = 2004
+//   DishGetStatus.downlink_throughput_bps = 1007  (bits/sec — do not ×8)
+//   DishGetStatus.uplink_throughput_bps   = 1008  (bits/sec — do not ×8)
+//   DishGetStatus.pop_ping_latency_ms     = 1009
+// Default transport: plaintext HTTP/2 gRPC at 192.168.100.1:9200
+//   rpc SpaceX.API.Device.Device/Handle
+syntax = "proto3";
+
+package SpaceX.API.Device;
+
+service Device {
+  rpc Handle(Request) returns (Response);
+}
+
+message Request {
+  oneof request {
+    GetStatusRequest get_status = 1004;
+  }
+}
+
+message Response {
+  oneof response {
+    DishGetStatusResponse dish_get_status = 2004;
+  }
+}
+
+message GetStatusRequest {}
+
+message DishOutage {
+  enum Cause {
+    UNKNOWN = 0;
+    BOOTING = 1;
+    STOWED = 2;
+    THERMAL_SHUTDOWN = 3;
+    NO_SCHEDULE = 4;
+    NO_SATS = 5;
+    OBSTRUCTED = 6;
+    NO_DOWNLINK = 7;
+    NO_PINGS = 8;
+    ACTUATOR_ACTIVITY = 9;
+    CABLE_TEST = 10;
+    SLEEPING = 11;
+    MOVING_WHILE_NOT_ALLOWED = 12;
+  }
+  Cause cause = 1;
+  int64 start_timestamp_ns = 2;
+  uint64 duration_ns = 3;
+  bool did_switch = 4;
+}
+
+message DishGetStatusResponse {
+  DishOutage outage = 1014;
+  float downlink_throughput_bps = 1007;
+  float uplink_throughput_bps = 1008;
+  float pop_ping_latency_ms = 1009;
+}

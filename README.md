@@ -22,7 +22,7 @@ Secrets live only in the broker `.env` (never in the browser).
 - **In-app config editor** (pencil): Apply in-session, or **Save to GitHub** via broker
 - Live **GITHUB** section: all repos from API (~40), public vs private styling, A–Z / Recent, refresh
 - Live **GITHUB ISSUES** section: open issues, collapsible, sort by name/date, refresh
-- Live vitals: weather, AdGuard, Proxmox, Dream Router 7 (UniFi)
+- Live vitals: weather, AdGuard, Proxmox, Dream Router 7 (UniFi); WAN throughput from the Starlink dish when `STARLINK=1`
 - Deploy with timestamped backups + restore; agent live cycle scripts
 
 ## Getting started (dev)
@@ -55,6 +55,25 @@ See `.env.example`. Important GitHub vars (two-token model):
 UniFi (DR7): prefer the same user/pass style as UniFiHUD, or `UNIFI_API_KEY`.  
 Proxmox: `PROXMOX_HOST` (port **8006** defaulted if missing), `PROXMOX_TOKENID` + `PROXMOX_SECRET`.  
 AdGuard: `ADGUARD_HOST` (use **http://** when NPM fronts `:80`).
+
+### Starlink WAN meter
+
+The DR7 **WAN throughput** numbers prefer the Starlink dish (same source as
+[wan-glass](https://github.com/kilrkrow/wan-glass) `StarlinkMetricsSource` /
+`StarlinkDishClient`): instantaneous `downlink_throughput_bps` /
+`uplink_throughput_bps` over plaintext gRPC on port **9200**. Those values are
+already **bits/sec** — the broker divides by 1e6 for Mbps and does **not** ×8
+(the UniFi HUD path is bytes/sec).
+
+| Variable | Use |
+|----------|-----|
+| `STARLINK` (or `STARLINK_ENABLED` / `WANGLASS_STARLINK`) | `1` / `true` / `on` to enable |
+| `STARLINK_HOST` (or `WANGLASS_STARLINK_HOST`) | Dish host; default `192.168.100.1` (Haven). `host:port` allowed |
+| `STARLINK_PORT` | gRPC status port; default `9200` |
+
+If the dish is unreachable the broker keeps last-good dish rates (stale) and
+does not crash. UniFi still supplies clients, radios, gateway, and PoE. Set
+`STARLINK=0` (or omit) to keep UniFi uplink counters on the WAN meter.
 
 Live LXC typically:
 
