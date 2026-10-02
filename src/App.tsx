@@ -324,23 +324,34 @@ function CategorySection({
 function GithubReposSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; onRefresh: () => void }) {
   // Default A–Z (case-insensitive). Toggle switches to most recently pushed.
   const [alpha, setAlpha] = useState(true);
+  // Visibility filter: All → Public → Private → All. Persists across in-session refresh
+  // (parent keeps this section mounted; a full remount/unmount would reset to All).
+  type VisFilter = 'all' | 'public' | 'private';
+  const [vis, setVis] = useState<VisFilter>('all');
+  const cycleVis = () => setVis((v) => (v === 'all' ? 'public' : v === 'public' ? 'private' : 'all'));
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const repos = env?.data || [];
   const stale = !!env?.stale && repos.length > 0;
   const isNew = (iso: string) => (Date.now() - new Date(iso).getTime()) / 86400000 <= 7;
   const ago = (iso: string) => { const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000); return d <= 0 ? 'today' : d === 1 ? '1d ago' : d < 30 ? d + 'd ago' : Math.floor(d / 30) + 'mo ago'; };
+  // Client-only filter on already-fetched repos (broker still returns private). Filter then sort.
+  const filtered = useMemo(() => {
+    if (vis === 'public') return repos.filter((r) => !r.private);
+    if (vis === 'private') return repos.filter((r) => r.private);
+    return repos;
+  }, [repos, vis]);
   const rows = useMemo(() => {
-    const copy = [...repos];
+    const copy = [...filtered];
     if (alpha) {
       copy.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
     } else {
       copy.sort((a, b) => +new Date(b.pushed_at) - +new Date(a.pushed_at));
     }
     return copy;
-  }, [repos, alpha]);
-  const totalIssues = repos.reduce((s, r) => s + (r.open_issues || 0), 0);
-  const totalPrs = repos.reduce((s, r) => s + (r.open_prs || 0), 0);
+  }, [filtered, alpha]);
+  const totalIssues = filtered.reduce((s, r) => s + (r.open_issues || 0), 0);
+  const totalPrs = filtered.reduce((s, r) => s + (r.open_prs || 0), 0);
 
   // Track when env updates (successful refresh)
   const prevTs = useRef<number | null>(null);
@@ -362,16 +373,20 @@ function GithubReposSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; 
     : env?.ts ? `as of ${new Date(env.ts).getHours().toString().padStart(2,'0')}:${new Date(env.ts).getMinutes().toString().padStart(2,'0')}` : null;
 
   if (!repos.length && !refreshing && !env?.error) return null;
-  const nPriv = repos.filter((r) => r.private).length;
-  const nPub = repos.length - nPriv;
+  const nPriv = filtered.filter((r) => r.private).length;
+  const nPub = filtered.length - nPriv;
+  const visLabel = vis === 'all' ? 'All' : vis === 'public' ? 'Public' : 'Private';
+  const emptyFilterMsg = vis === 'public' ? 'No public repositories' : vis === 'private' ? 'No private repositories' : null;
   return (
     <section className="cat">
       <div className="cat-head">
         <div className="cat-title">GITHUB</div>
         <div className="cat-meta">
-          {repos.length} repos
-          {nPub > 0 && <> · <span style={{ color: 'var(--accent)' }}>{nPub} public</span></>}
-          {nPriv > 0 && <> · <span style={{ color: 'var(--violet)' }}>{nPriv} private</span></>}
+          {vis === 'all'
+            ? <>{filtered.length} repos</>
+            : <>{filtered.length} of {repos.length} repos · {visLabel}</>}
+          {vis === 'all' && nPub > 0 && <> · <span style={{ color: 'var(--accent)' }}>{nPub} public</span></>}
+          {vis === 'all' && nPriv > 0 && <> · <span style={{ color: 'var(--violet)' }}>{nPriv} private</span></>}
           {totalIssues > 0 && <> · <span style={{ color: 'var(--warn)' }}>{totalIssues} open issues</span></>}
           {totalPrs > 0 && <> · {totalPrs} PRs</>}
         </div>
@@ -389,42 +404,56 @@ function GithubReposSection({ env, onRefresh }: { env: Envelope<Repo[]> | null; 
           </button>
           <button
             type="button"
+            className={'sortbtn' + (vis !== 'all' ? ' active' : '')}
+            onClick={cycleVis}
+            title={`Visibility: ${visLabel} – click to cycle All → Public → Private`}
+          >
+            {visLabel}
+          </button>
+          <button
+            type="button"
             className={'sortbtn' + (alpha ? ' active' : '')}
             onClick={() => setAlpha((a) => !a)}
-            title={alpha ? 'Sorted A–Z — click for most recently pushed' : 'Sorted by recent push — click for A–Z'}
+            title={alpha ? `Sorted A–Z – click for most recently pushed` : `Sorted by recent push – click for A–Z`}
           >
-            <ArrowDownAZ size={16} /> {alpha ? 'A–Z' : 'Recent'}
+            <ArrowDownAZ size={16} /> {alpha ? `A–Z` : 'Recent'}
           </button>
         </div>
       </div>
       <div className="grid" style={stale ? { opacity: 0.6, filter: 'saturate(.5)' } : undefined}>
-        {rows.map((r) => (
-          <a
-            key={r.html_url || r.name}
-            href={r.html_url}
-            className={'tile repo ' + (r.private ? 'private' : 'public')}
-            target={r.html_url !== '#' ? '_blank' : undefined}
-            rel="noopener noreferrer"
-            title={r.private ? 'Private repository' : 'Public repository'}
-          >
-            <RepoMark name={r.name} iconUrl={r.icon_url} />
-            <div className="body">
-              <div className="ttl">
-                <span>{r.name}</span>
-                <span className="vis-badge">{r.private ? 'private' : 'public'}</span>
-                {r.private ? <span className="lock" title="Private"><Lock size={12} /></span> : null}
-                {!r.private && isNew(r.pushed_at) ? <span className="new">NEW</span> : null}
+        {rows.length === 0 && repos.length > 0 && emptyFilterMsg ? (
+          <div className="gh-empty-filter" style={{ gridColumn: '1 / -1', padding: '1.25rem 0.5rem', color: 'var(--t3)', fontSize: '.85rem' }}>
+            {emptyFilterMsg}
+          </div>
+        ) : (
+          rows.map((r) => (
+            <a
+              key={r.html_url || r.name}
+              href={r.html_url}
+              className={'tile repo ' + (r.private ? 'private' : 'public')}
+              target={r.html_url !== '#' ? '_blank' : undefined}
+              rel="noopener noreferrer"
+              title={r.private ? 'Private repository' : 'Public repository'}
+            >
+              <RepoMark name={r.name} iconUrl={r.icon_url} />
+              <div className="body">
+                <div className="ttl">
+                  <span>{r.name}</span>
+                  <span className="vis-badge">{r.private ? 'private' : 'public'}</span>
+                  {r.private ? <span className="lock" title="Private"><Lock size={12} /></span> : null}
+                  {!r.private && isNew(r.pushed_at) ? <span className="new">NEW</span> : null}
+                </div>
+                <div className="sub">{r.description || '—'}</div>
+                <div className="meta">
+                  {r.language && <span className="chip"><span className="langdot" style={{ background: LANG_COLOR[r.language] || '#888' }} />{r.language}</span>}
+                  <span className={'chip' + (r.open_issues > 0 ? ' alert' : '')} title="Open issues (PRs excluded)">◆ {r.open_issues}</span>
+                  {r.open_prs > 0 && <span className="chip" title="Open pull requests">⑂ {r.open_prs}</span>}
+                  <span className="chip">· {ago(r.pushed_at)}</span>
+                </div>
               </div>
-              <div className="sub">{r.description || '—'}</div>
-              <div className="meta">
-                {r.language && <span className="chip"><span className="langdot" style={{ background: LANG_COLOR[r.language] || '#888' }} />{r.language}</span>}
-                <span className={'chip' + (r.open_issues > 0 ? ' alert' : '')} title="Open issues (PRs excluded)">◆ {r.open_issues}</span>
-                {r.open_prs > 0 && <span className="chip" title="Open pull requests">⑂ {r.open_prs}</span>}
-                <span className="chip">· {ago(r.pushed_at)}</span>
-              </div>
-            </div>
-          </a>
-        ))}
+            </a>
+          ))
+        )}
       </div>
     </section>
   );
