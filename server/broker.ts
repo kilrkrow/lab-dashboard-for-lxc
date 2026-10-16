@@ -23,10 +23,10 @@
  *   ADGUARD_URL      http://192.168.1.20
  *   ADGUARD_USER     admin
  *   ADGUARD_PASS     <password>
- *   CONFIG_PATH      /etc/haven/config.json        (default: ../public/config.json)
- *   PORT             3000
  *   KUMA_URL         Uptime Kuma base (http://kuma.lan:3001) — optional, for /api/status
  *   KUMA_API_KEY     Uptime Kuma API key (Settings → API Keys) for its /metrics
+ *   CONFIG_PATH      /etc/haven/config.json        (default: ../public/config.json)
+ *   PORT             3000
  */
 
 import http from 'node:http';
