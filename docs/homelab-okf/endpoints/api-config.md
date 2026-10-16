@@ -23,12 +23,19 @@ Backs the in-browser config editor's "Sync to GitHub" button (`src/App.tsx`
 Because half of it touches disk, this endpoint **cannot** run wholesale on a
 stateless edge runtime. The clean migration keeps it in the broker.
 
+## Access control
+
+- Requires `CONFIG_WRITE_SECRET` in the broker env; while unset every save gets 403.
+- The request must send the secret in `x-haven-secret` (401 if wrong or missing).
+- Browser requests must be same-origin (`Sec-Fetch-Site`/`Origin` check, plus
+  `ALLOWED_ORIGINS`); cross-site saves get 403. The broker sends no CORS headers.
+
 ## Behaviour
 
 - `editConfigUrl` must be present in `config.json` or the call fails with a clear message.
 - 404 on the GitHub GET ⇒ treated as "create new file" (no SHA).
 - On success: commit message `chore: update dashboard config via Haven Lab editor`, then local disk is rewritten.
-- Returns `{ ok, message }` (HTTP 200 on success, 502 on GitHub failure, 400 on bad JSON body).
+- Returns `{ ok, message }` (HTTP 200 on success, 502 on GitHub failure, 400 on bad JSON body, 401/403 when the guard refuses).
 
 # Citations
 - `server/broker.ts` → `pushConfigToGithub`, `parseEditConfigUrl`, the `PUT /api/config` handler

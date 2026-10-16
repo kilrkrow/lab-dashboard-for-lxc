@@ -29,7 +29,7 @@ them, and (b) reach LAN services the browser can't.
 
 - Dev: `npm run broker` (`node --import=tsx/esm server/broker.ts`)
 - Prod: `npm run broker:build` then `npm run broker:start` (`node dist-server/broker.js`)
-- Listens on `PORT` (default **3000**), binds `0.0.0.0`.
+- Listens on `PORT` (default **3000**), binds `HOST` (default **127.0.0.1**; nginx proxies `/api`).
 
 ## Configuration
 
@@ -48,7 +48,8 @@ if nothing was ever cached). This is what lets the UI ride out blips.
 
 - `rejectUnauthorized: false` is the default on outbound fetches — required for
   UniFi's self-signed cert, but it means the broker does not verify upstream TLS.
-- Sets `access-control-allow-origin: *` on API responses.
+- Sends no CORS headers (same-origin only). `PUT /api/config` also needs
+  `CONFIG_WRITE_SECRET` — see [PUT /api/config](../endpoints/api-config.md).
 - The broker reads `editConfigUrl` out of the on-disk config to know where to
   commit on `PUT /api/config` — config and code are coupled through that field.
 

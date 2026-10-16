@@ -51,6 +51,9 @@ See `.env.example`. Important GitHub vars (two-token model):
 | `GITHUB_TOKEN` (or `GITHUB_RO_TOKEN`) | RO — repo list, issues, PRs |
 | `GITHUB_WRITE_TOKEN` | RW — **Save to GitHub** for config only (e.g. `homelab-stacks`) |
 | `GITHUB_USER` | Search/list context (e.g. issues `user:…`) |
+| `CONFIG_WRITE_SECRET` | **Required for Save to GitHub.** Shared secret the editor sends with each save; saves are refused while unset |
+| `HOST` | Bind address, default `127.0.0.1` (nginx proxies `/api`). Set `0.0.0.0` only if something must reach the broker directly |
+| `ALLOWED_ORIGINS` | Optional comma list of extra origins allowed to save |
 
 UniFi (DR7): prefer the same user/pass style as UniFiHUD, or `UNIFI_API_KEY`.  
 Proxmox: `PROXMOX_HOST` (port **8006** defaulted if missing), `PROXMOX_TOKENID` + `PROXMOX_SECRET`.  
@@ -74,7 +77,7 @@ Runtime tiles and titles load from `config.json` next to the static site.
 }
 ```
 
-- **Pencil editor**: Apply (session only) or Save to GitHub (needs write token + valid `editConfigUrl`).
+- **Pencil editor**: Apply (session only) or Save to GitHub (needs write token, valid `editConfigUrl`, and the save secret typed into the editor footer; tick *remember* to keep it in that browser).
 - A static category named **GITHUB** in config is **ignored** (replaced by live GITHUB / GITHUB ISSUES sections).
 
 Do not commit real `config.json` with private LAN URLs.
@@ -121,6 +124,26 @@ Use an **OpenSSH** private key (not PuTTY `.ppk`). Convert with MobaKeyGen if ne
 `publish.ps1` / LXC `update.sh` remain available for git-pull style workflows.
 
 ## Auth notes
+
+**Config saves are locked down.** `PUT /api/config` rewrites every tile link and
+commits with the write token, so the broker only accepts it when:
+
+- `CONFIG_WRITE_SECRET` is set and the request sends it as `x-haven-secret`
+  (the editor does this from its *Save secret* box);
+- the request is same-origin (cross-site browser requests are refused, and the
+  broker sends no CORS headers, so other pages can't call any `/api/*`).
+
+The broker also binds `127.0.0.1` by default, so the LAN reaches it only through nginx.
+
+Upgrading an existing LXC:
+
+```bash
+echo "CONFIG_WRITE_SECRET=$(openssl rand -hex 24)" >> /opt/havenlab-broker/.env
+systemctl restart havenlab-broker
+journalctl -u havenlab-broker -n 5   # expect "127.0.0.1:8787" and "Config saves: enabled"
+```
+
+If anything other than the local nginx talks to the broker directly, set `HOST=0.0.0.0`.
 
 - Prefer fine-grained PATs: RO for list/issues; separate RW only on the **config** repo for Save.
 - Do not embed tokens in nginx configs long-term; broker holds secrets.

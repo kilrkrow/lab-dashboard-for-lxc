@@ -25,9 +25,15 @@
  *   ADGUARD_PASS     <password>
  *   CONFIG_PATH      /etc/haven/config.json        (default: ../public/config.json)
  *   PORT             3000
+ *   HOST             bind address (default 127.0.0.1 — nginx proxies /api to it)
+ *   CONFIG_WRITE_SECRET  shared secret required for PUT /api/config (saves are
+ *                        disabled until it is set)
+ *   ALLOWED_ORIGINS  optional comma list of extra origins allowed to save
+ *                    (e.g. https://home.lan.example.com)
  */
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -81,6 +87,11 @@ const AG_URL        = normalizeUrl(_agHost, 'http');
 const AG_USER       = e('ADGUARD_USER',  'admin');
 const AG_PASS       = e('ADGUARD_PASS');
 const PORT          = parseInt(e('PORT', '3000'), 10);
+// Loopback by default: nginx on the same host proxies /api, so nothing else on
+// the LAN needs to reach the broker directly. Set HOST=0.0.0.0 to opt out.
+const HOST          = e('HOST', '127.0.0.1');
+const CONFIG_WRITE_SECRET = e('CONFIG_WRITE_SECRET');
+const ALLOWED_ORIGINS = e('ALLOWED_ORIGINS').split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean);
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR   = path.resolve(__dirname, '../dist');
@@ -898,6 +909,45 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff',
 };
 
+// ─── config write guard ───────────────────────────────────────────────────────
+// Saves rewrite every tile link and commit with the RW token, so they need the
+// shared secret and must come from the dashboard's own origin.
+
+function secretMatches(given: string): boolean {
+  if (!CONFIG_WRITE_SECRET || !given) return false;
+  const a = crypto.createHash('sha256').update(given).digest();
+  const b = crypto.createHash('sha256').update(CONFIG_WRITE_SECRET).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+function header(req: http.IncomingMessage, name: string): string {
+  const v = req.headers[name];
+  return (Array.isArray(v) ? v[0] : v) ?? '';
+}
+
+/** Browser requests must be same-origin; non-browser clients (no Origin) rely on the secret. */
+function originAllowed(req: http.IncomingMessage): boolean {
+  const site = header(req, 'sec-fetch-site');
+  if (site === 'cross-site' || site === 'same-site') return false;
+  const origin = header(req, 'origin');
+  if (!origin || site === 'same-origin') return true;
+  if (ALLOWED_ORIGINS.includes(origin.replace(/\/$/, ''))) return true;
+  try {
+    const host = new URL(origin).host;
+    const fwd = header(req, 'x-forwarded-host').split(',')[0].trim();
+    return host === fwd || host === header(req, 'host');
+  } catch { return false; }
+}
+
+function checkConfigWrite(req: http.IncomingMessage): { status: number; message: string } | null {
+  if (!CONFIG_WRITE_SECRET) {
+    return { status: 403, message: 'Saving is disabled: set CONFIG_WRITE_SECRET in the broker .env and restart it' };
+  }
+  if (!originAllowed(req)) return { status: 403, message: 'Cross-origin save rejected' };
+  if (!secretMatches(header(req, 'x-haven-secret'))) return { status: 401, message: 'Wrong or missing save secret' };
+  return null;
+}
+
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   const url = req.url ?? '/';
@@ -905,13 +955,13 @@ const server = http.createServer(async (req, res) => {
 
   const json = (data: unknown, status = 200) => {
     const body = JSON.stringify(data);
-    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(body);
   };
 
-  // CORS preflight
+  // Same-origin only: no CORS headers, so browsers refuse cross-origin preflights.
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,PUT,OPTIONS', 'access-control-allow-headers': 'content-type' });
+    res.writeHead(204, { allow: 'GET,PUT' });
     return res.end();
   }
 
@@ -941,7 +991,6 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, {
         'content-type': icon.type || 'image/png',
         'cache-control': 'public, max-age=3600',
-        'access-control-allow-origin': '*',
       });
       return res.end(icon.body);
     }
@@ -951,6 +1000,7 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         unifi: { url: UNIFI_URL, base: unifiResolvedBase, lastError: unifiLastError },
         github: { ro: !!GH_TOKEN_RO, rw: !!GH_TOKEN_RW && GH_TOKEN_RW !== GH_TOKEN_RO ? 'separate' : !!GH_TOKEN_RW },
+        configWrite: !!CONFIG_WRITE_SECRET,
 
         cache: { dr7: !!dr7Cache, repos: !!reposCache, icons: iconCache.size },
       });
@@ -958,6 +1008,11 @@ const server = http.createServer(async (req, res) => {
 
     // PUT /api/config — save edited config to disk + push to GitHub
     if (pathname === '/api/config' && req.method === 'PUT') {
+      const denied = checkConfigWrite(req);
+      if (denied) {
+        req.resume();
+        return json({ ok: false, message: denied.message }, denied.status);
+      }
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
       const body = Buffer.concat(chunks).toString('utf8');
@@ -992,8 +1047,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`[havenlab-broker] :${PORT}  config=${CONFIG_PATH}`);
+server.listen(PORT, HOST, () => {
+  console.log(`[havenlab-broker] ${HOST}:${PORT}  config=${CONFIG_PATH}`);
+  console.log(`  Config saves: ${CONFIG_WRITE_SECRET ? 'enabled (secret set)' : 'DISABLED (no CONFIG_WRITE_SECRET)'}`);
   console.log(`  UniFi: ${UNIFI_URL} ${UNIFI_API_KEY ? '(API key)' : UNIFI_USER ? '(user/pass)' : '(no auth)'}`);
   console.log(`  Proxmox: ${PX_URL} node=${PX_NODE} token=${PX_TOKEN ? 'set' : 'MISSING'}`);
   console.log(`  AdGuard: ${AG_URL} user=${AG_USER} pass=${AG_PASS ? 'set' : 'MISSING'}`);
