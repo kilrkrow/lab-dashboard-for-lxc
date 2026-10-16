@@ -9,7 +9,7 @@ timestamp: 2026-06-23
 
 # GET /api/proxmox
 
-Powers the Proxmox panel. Served by the [Haven Broker](../systems/haven-broker.md),
+Powers the old Proxmox card. The homepage now uses the Lab health light ([`/api/lab`](api-lab.md)); this endpoint stays for scripts. Served by the [Haven Broker](../systems/haven-broker.md),
 which calls the **Proxmox VE API** on the LAN. Polled every **5 seconds**.
 
 **Reachability: LAN-only.** Upstream `PROXMOX_URL` (documented example

@@ -55,6 +55,8 @@ See `.env.example`. Important GitHub vars (two-token model):
 
 Status dots: `KUMA_URL` (e.g. `http://kuma.haven:3001`) + `KUMA_API_KEY` (Uptime Kuma → Settings → API Keys) let the broker read Kuma's `/metrics`. A tile matches a monitor by **name** (case-insensitive), or by the monitored URL's host:port, or by a TCP-port monitor on the same host:port; ping monitors are not used. Tiles with no match, or every tile when Kuma isn't set or reachable, are probed directly every 30 s (any HTTP answer below 500 counts as up). Only URLs in the on-disk `config.json` are probed.
 
+Lab health: the **Lab health** card in the top row rolls up Proxmox VE, Proxmox Backup Server and Portainer into one light. Tap it (or open `/#health`) for a panel listing what needs you, then a card per host. It reads `GET /api/lab`, cached 30 s. Each source is optional and stays grey until configured: Proxmox uses the `PROXMOX_*` token above (role **PVEAuditor** on `/`); PBS needs `PBS_HOST`, `PBS_TOKENID`, `PBS_SECRET` (role **Audit** on `/`); Portainer needs `PORTAINER_HOST` and `PORTAINER_TOKEN` (an access token of a non-admin user with access to each environment). `LAB_EXPECTED_STOPPED` lists guests or containers that are off on purpose.
+
 UniFi (DR7): prefer the same user/pass style as UniFiHUD, or `UNIFI_API_KEY`.  
 Proxmox: `PROXMOX_HOST` (port **8006** defaulted if missing), `PROXMOX_TOKENID` + `PROXMOX_SECRET`.  
 AdGuard: `ADGUARD_HOST` (use **http://** when NPM fronts `:80`).

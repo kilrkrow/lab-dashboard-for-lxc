@@ -34,7 +34,7 @@ Defined in `src/App.tsx`. This is the heart of the dashboard — most of it is l
 | Panel | Path | Interval |
 |---|---|---|
 | Network (DR7) | [`/api/dr7`](../endpoints/api-dr7.md) | 3s |
-| Proxmox | [`/api/proxmox`](../endpoints/api-proxmox.md) | 5s |
+| Lab health (Proxmox, PBS, Portainer) | [`/api/lab`](../endpoints/api-lab.md) | 30s |
 | AdGuard | [`/api/adguard`](../endpoints/api-adguard.md) | 30s |
 | Tile status dots | [`/api/status`](../endpoints/api-status.md) | 30s |
 | GitHub repos | [`/api/repos`](../endpoints/api-repos.md) | 5 min |
