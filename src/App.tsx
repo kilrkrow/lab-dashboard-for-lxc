@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Search, Hexagon, Pencil, Zap, ArrowDownAZ, Lock, RefreshCw, Plus, Trash2, X, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { getEnvelope } from './api';
-import type { Repo, GhIssue, Dr7, Proxmox, Adguard, Envelope } from './api';
+import type { Repo, GhIssue, Dr7, Adguard, Envelope, StatusMap, TileStatus, LabHealth } from './api';
+import { LabHealthCard, LabPanel } from './LabHealth';
 import './App.css';
 
 /* ---------- config.json (apps/sections), served locally by the broker ---------- */
@@ -245,11 +246,18 @@ function sortApps(apps: AppItem[], mode: CatSortMode, lastUsed: Record<string, n
 
 /* ---------- app tiles ---------- */
 function AppTile({
-  app, svc, grafanaData, wanDown, onOpen,
+  app, svc, status, wanDown, onOpen,
 }: {
-  app: AppItem; svc?: boolean; grafanaData: number[]; wanDown?: boolean; onOpen?: (app: AppItem) => void;
+  app: AppItem; svc?: boolean; status?: TileStatus; wanDown?: boolean; onOpen?: (app: AppItem) => void;
 }) {
   const [imgErr, setImgErr] = useState(false);
+  const state = app.wan && wanDown ? 'down' : status?.state ?? 'unknown';
+  const dotClass = state === 'up' ? '' : state === 'down' ? ' bad' : state === 'unknown' ? ' unknown' : ' warn';
+  const dotTitle = app.wan && wanDown
+    ? 'WAN down'
+    : status
+      ? `${state}${status.ms != null ? ` · ${status.ms}ms` : ''}${status.detail ? ` · ${status.detail}` : ''}`
+      : 'no status yet';
   return (
     <a
       href={app.url}
@@ -264,23 +272,23 @@ function AppTile({
       <div className="body">
         <div className="ttl">{app.name}</div>
         <div className="sub">{app.description}</div>
-        {app.grafana && <Spark values={grafanaData} h={22} />}
+        {app.grafana && status && status.history.length > 1 && <Spark values={status.history} h={22} />}
       </div>
-      {svc && <span className="svc-dot"><span className={'dot' + (app.wan && wanDown ? ' bad' : '')} /></span>}
+      {svc && <span className="svc-dot" title={dotTitle}><span className={'dot' + dotClass} /></span>}
     </a>
   );
 }
 
 /* ---------- category section with sort toggle ---------- */
 function CategorySection({
-  cat, sortMode, onToggleSort, lastUsed, onAppOpen, grafanaData, wanDown,
+  cat, sortMode, onToggleSort, lastUsed, onAppOpen, statuses, wanDown,
 }: {
   cat: Category;
   sortMode: CatSortMode;
   onToggleSort: () => void;
   lastUsed: Record<string, number>;
   onAppOpen: (app: AppItem) => void;
-  grafanaData: number[];
+  statuses: StatusMap;
   wanDown: boolean;
 }) {
   const apps = useMemo(
@@ -310,7 +318,7 @@ function CategorySection({
             key={appKey(a)}
             app={a}
             svc={cat.svc}
-            grafanaData={grafanaData}
+            status={statuses[a.url]}
             wanDown={wanDown}
             onOpen={onAppOpen}
           />
@@ -908,9 +916,22 @@ export default function App() {
   const [issues, setIssues] = useState<Envelope<GhIssue[]> | null>(null);
 
   const dr7 = usePoll<Dr7>('/api/dr7', 3000);
-  const proxmox = usePoll<Proxmox>('/api/proxmox', 5000);
+  const lab = usePoll<LabHealth>('/api/lab', 30000);
+  // Slide-over host panel; #health opens it so it can be bookmarked
+  const [labOpen, setLabOpen] = useState(() => window.location.hash === '#health');
+  useEffect(() => {
+    const onHash = () => setLabOpen(window.location.hash === '#health');
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const openLab = useCallback(() => { window.location.hash = 'health'; setLabOpen(true); }, []);
+  const closeLab = useCallback(() => {
+    setLabOpen(false);
+    if (window.location.hash === '#health') history.replaceState(null, '', window.location.pathname + window.location.search);
+  }, []);
   const adguard = usePoll<Adguard>('/api/adguard', 30000);
-  const [grafana, setGrafana] = useState<number[]>(() => Array.from({ length: 24 }, (_, i) => 35 + ((i * 17) % 40)));
+  const status = usePoll<StatusMap>('/api/status', 30000);
+  const statuses = status?.data ?? {};
 
   // Live GITHUB repos (full list from API — not static config category)
   useEffect(() => {
@@ -951,14 +972,10 @@ export default function App() {
     fetch('/config.json', { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(); return r.json(); })
       .then((d: DashConfig) => { setCfg(d); if (d.title) document.title = d.title; }).catch(() => setCfgErr(true));
   }, []);
-  useEffect(() => {
-    const id = setInterval(() => setGrafana((g) => [...g.slice(1), 35 + ((g[g.length - 1] + 13) % 40)]), 1600);
-    return () => clearInterval(id);
-  }, []);
 
   // WAN badge from DR7 (not GitHub stale — that was a misleading coupling)
   const wanDown = !!dr7?.data && dr7.data.wan.status === 'down';
-  const px = proxmox?.data, ag = adguard?.data;
+  const ag = adguard?.data;
 
   const cmdIndex: CmdItem[] = useMemo(() => {
     const items: CmdItem[] = [];
@@ -1003,16 +1020,10 @@ export default function App() {
             <div><div className="vbig" style={{ fontSize: '1.35rem' }}>{ag ? ag.blocked_pct : '—'}%</div><div className="vsub">blocked today<br /><b>{ag ? ag.blocked.toLocaleString() : '—'}</b> / {ag ? Math.round(ag.queries / 1000) + 'k' : '—'} queries</div></div>
           </div>
         </div>
-        <div className="vcard glass">
-          <div className="vh"><span className="lbl">Proxmox · {px?.node || 'pve'}</span><span className="ico"><span className="dot" /></span></div>
-          <div className="bars">
-            <div className="bar"><span style={{ width: 30 }}>CPU</span><div className="track"><div className="fill" style={{ width: (px?.cpu_pct ?? 0) + '%' }} /></div><span className="pc">{px?.cpu_pct ?? '—'}%</span></div>
-            <div className="bar"><span style={{ width: 30 }}>RAM</span><div className="track"><div className="fill" style={{ width: (px?.mem_pct ?? 0) + '%' }} /></div><span className="pc">{px?.mem_pct ?? '—'}%</span></div>
-            <div className="bar"><span style={{ width: 30 }}>TEMP</span><div className="track"><div className="fill warn" style={{ width: ((px?.temp_c ?? 0) / 100 * 100) + '%' }} /></div><span className="pc">{px?.temp_c ?? '—'}°</span></div>
-          </div>
-          <div className="status-line"><span className="dot" /><span>{px ? `${px.lxc_up} LXC · ${px.vm_up} VM up` : 'loading…'}</span></div>
-        </div>
+        <LabHealthCard env={lab} onOpen={openLab} />
       </div>
+
+      {labOpen && <LabPanel env={lab} onClose={closeLab} />}
 
       <Dr7Module env={dr7} />
 
@@ -1028,7 +1039,7 @@ export default function App() {
             onToggleSort={() => toggleCatSort(cat.name)}
             lastUsed={lastUsed}
             onAppOpen={markAppUsed}
-            grafanaData={grafana}
+            statuses={statuses}
             wanDown={wanDown}
           />
         ))}

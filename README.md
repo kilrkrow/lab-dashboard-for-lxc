@@ -23,6 +23,7 @@ Secrets live only in the broker `.env` (never in the browser).
 - Live **GITHUB** section: all repos from API (~40), public vs private styling, A–Z / Recent, refresh
 - Live **GITHUB ISSUES** section: open issues, collapsible, sort by name/date, refresh
 - Live vitals: weather, AdGuard, Proxmox, Dream Router 7 (UniFi)
+- **Real status dots** on `svc` category tiles: green up, red down, amber pending/maintenance, grey unknown (hover for detail). From Uptime Kuma when a monitor matches, otherwise the broker probes the tile URL. Tiles with `"grafana": true` show their real response-time sparkline
 - Deploy with timestamped backups + restore; agent live cycle scripts
 
 ## Getting started (dev)
@@ -51,6 +52,10 @@ See `.env.example`. Important GitHub vars (two-token model):
 | `GITHUB_TOKEN` (or `GITHUB_RO_TOKEN`) | RO — repo list, issues, PRs |
 | `GITHUB_WRITE_TOKEN` | RW — **Save to GitHub** for config only (e.g. `homelab-stacks`) |
 | `GITHUB_USER` | Search/list context (e.g. issues `user:…`) |
+
+Status dots: `KUMA_URL` (e.g. `http://kuma.haven:3001`) + `KUMA_API_KEY` (Uptime Kuma → Settings → API Keys) let the broker read Kuma's `/metrics`. A tile matches a monitor by **name** (case-insensitive), or by the monitored URL's host:port, or by a TCP-port monitor on the same host:port; ping monitors are not used. Tiles with no match, or every tile when Kuma isn't set or reachable, are probed directly every 30 s (any HTTP answer below 500 counts as up). Only URLs in the on-disk `config.json` are probed.
+
+Lab health: the **Lab health** card in the top row rolls up Proxmox VE, Proxmox Backup Server and Portainer into one light. Tap it (or open `/#health`) for a panel listing what needs you, then a card per host. It reads `GET /api/lab`, cached 30 s. Each source is optional and stays grey until configured: Proxmox uses the `PROXMOX_*` token above (role **PVEAuditor** on `/`); PBS needs `PBS_HOST`, `PBS_TOKENID`, `PBS_SECRET` (role **Audit** on `/`); Portainer needs `PORTAINER_HOST` and `PORTAINER_TOKEN` (an access token of a non-admin user with access to each environment). `LAB_EXPECTED_STOPPED` lists guests or containers that are off on purpose.
 
 UniFi (DR7): prefer the same user/pass style as UniFiHUD, or `UNIFI_API_KEY`.  
 Proxmox: `PROXMOX_HOST` (port **8006** defaulted if missing), `PROXMOX_TOKENID` + `PROXMOX_SECRET`.  

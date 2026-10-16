@@ -2,6 +2,11 @@
 
 History of meaningful changes to this bundle, newest first.
 
+## 2026-10-16
+
+**Added** [`GET /api/status`](endpoints/api-status.md) — real tile status dots
+(Uptime Kuma `/metrics`, else direct probe).
+
 ## 2026-06-23
 
 **Creation** — Initial bundle. Captured the pre-migration architecture of the

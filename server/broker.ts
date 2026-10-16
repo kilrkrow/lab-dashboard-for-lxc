@@ -1,7 +1,7 @@
 /**
  * Haven Lab — local broker
  *
- * Serves /api/dr7, /api/repos, /api/proxmox, /api/adguard, /config.json
+ * Serves /api/dr7, /api/repos, /api/proxmox, /api/adguard, /api/status, /api/lab, /config.json
  * and static assets from ../dist.
  *
  * Configuration via environment variables (or .env file):
@@ -23,6 +23,14 @@
  *   ADGUARD_URL      http://192.168.1.20
  *   ADGUARD_USER     admin
  *   ADGUARD_PASS     <password>
+ *   KUMA_URL         Uptime Kuma base (http://kuma.lan:3001) — optional, for /api/status
+ *   KUMA_API_KEY     Uptime Kuma API key (Settings → API Keys) for its /metrics
+ *   PBS_HOST         Proxmox Backup Server (port 8007 defaulted) — optional, for /api/lab
+ *   PBS_TOKENID      user@pbs!tokenname (Audit role on /)
+ *   PBS_SECRET       token secret
+ *   PORTAINER_HOST   Portainer (https://portainer.lan:9443) — optional, for /api/lab
+ *   PORTAINER_TOKEN  access token (X-API-Key) of a non-admin user with access to the environments
+ *   LAB_EXPECTED_STOPPED  comma list of guest/container names or vmids that are off on purpose
  *   CONFIG_PATH      /etc/haven/config.json        (default: ../public/config.json)
  *   PORT             3000
  */
@@ -52,6 +60,9 @@ const UNIFI_PREFIX_FORCED = process.env.UNIFI_API_PREFIX !== undefined;
 const GH_TOKEN_RO   = e('GITHUB_TOKEN') || e('GITHUB_RO_TOKEN');
 const GH_TOKEN_RW   = e('GITHUB_WRITE_TOKEN') || e('GITHUB_TOKEN_RW') || GH_TOKEN_RO;
 const GH_USER       = e('GITHUB_USER', 'kilrkrow');
+// Uptime Kuma — optional; /api/status falls back to direct probes without it
+const KUMA_URL      = e('KUMA_URL') ? normalizeUrl(e('KUMA_URL'), 'http') : '';
+const KUMA_API_KEY  = e('KUMA_API_KEY');
 
 /** Ensure scheme; if no explicit port, apply defaultPort (Proxmox API is :8006). */
 function normalizeUrl(hostOrUrl: string, defaultScheme: 'http' | 'https', defaultPort?: number): string {
@@ -522,9 +533,10 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
       all.push(...batch);
       if (batch.length < 100) break;
     }
+    const active = all.filter(r => !r.archived);
 
     // Open PRs per repo (best-effort). Use full_name so org repos work (not GH_USER/name).
-    const prCounts = await Promise.all(all.map(async (r) => {
+    const prCounts = await Promise.all(active.map(async (r) => {
       try {
         const pr = await rawFetch(
           `https://api.github.com/repos/${r.full_name}/pulls?state=open&per_page=1`,
@@ -536,14 +548,14 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
     }));
 
     // Probe for assets/icon.png (etc.) in parallel — private-safe via Contents API
-    const hasIcon = await Promise.all(all.map(async (r) => {
+    const hasIcon = await Promise.all(active.map(async (r) => {
       try {
         return await repoHasIconFile(r.full_name, hdr);
       } catch { return false; }
     }));
 
     // GitHub open_issues_count includes PRs — subtract so UI "issues" is issues-only
-    const out: RepoOut[] = all.map((r, i) => {
+    const out: RepoOut[] = active.map((r, i) => {
       const openPrs = prCounts[i];
       const issuesOnly = Math.max(0, (r.open_issues_count ?? 0) - openPrs);
       return {
@@ -801,6 +813,462 @@ async function fetchAdguard(): Promise<Envelope<object>> {
   }
 }
 
+// ─── /api/status — real up/down for service tiles ────────────────────────────
+// Tiles in a `svc` category (and any tile with `grafana: true`) get a state.
+// Source 1: Uptime Kuma's Prometheus /metrics (KUMA_URL + KUMA_API_KEY), matched
+// to a tile by monitor name or by the monitored URL's hostname.
+// Source 2: for tiles with no matching monitor, the broker probes the tile URL
+// itself: any HTTP answer below 500 counts as up.
+// Only URLs from the on-disk config.json are probed, never client input.
+
+type TileState = 'up' | 'down' | 'pending' | 'maintenance' | 'unknown';
+interface TileStatus {
+  state: TileState;
+  source: 'kuma' | 'probe';
+  ms: number | null;
+  /** Recent response times (ms), oldest first, for the tile sparkline. */
+  history: number[];
+  detail?: string;
+}
+interface KumaMonitor { name: string; url: string; hostname: string; port: string; state: TileState; ms: number | null; }
+
+const STATUS_TTL_MS = 30_000;
+const PROBE_TIMEOUT_MS = 4_000;
+const HISTORY_LEN = 24;
+let statusCache: Envelope<Record<string, TileStatus>> | null = null;
+let statusInflight: Promise<Envelope<Record<string, TileStatus>>> | null = null;
+const latencyHistory = new Map<string, number[]>();
+
+function statusTargets(): Array<{ name: string; url: string }> {
+  const cfg = parseJson<{ categories?: Array<{ name?: string; svc?: boolean; apps?: Array<{ name?: string; url?: string; grafana?: boolean }> }> }>(
+    fs.readFileSync(CONFIG_PATH, 'utf8'),
+  );
+  const out = new Map<string, { name: string; url: string }>();
+  for (const cat of cfg?.categories ?? []) {
+    for (const app of cat.apps ?? []) {
+      if (!app.url || !/^https?:\/\//i.test(app.url)) continue;
+      if (cat.svc || app.grafana) out.set(app.url, { name: app.name ?? app.url, url: app.url });
+    }
+  }
+  return [...out.values()];
+}
+
+/** Parse `metric{a="b",...} value` lines; label order varies by Kuma version. */
+function parseKumaMetrics(text: string): KumaMonitor[] {
+  const byKey = new Map<string, KumaMonitor>();
+  const line = /^(monitor_status|monitor_response_time)\{([^}]*)\}\s+(-?[\d.eE+]+)/;
+  for (const raw of text.split('\n')) {
+    const m = raw.match(line);
+    if (!m) continue;
+    const labels: Record<string, string> = {};
+    for (const l of m[2].matchAll(/(\w+)="((?:[^"\\]|\\.)*)"/g)) labels[l[1]] = l[2].replace(/\\(.)/g, '$1');
+    const name = labels.monitor_name ?? '';
+    const url = labels.monitor_url && labels.monitor_url !== 'null' ? labels.monitor_url : '';
+    const hostname = labels.monitor_hostname && labels.monitor_hostname !== 'null' ? labels.monitor_hostname : '';
+    const port = labels.monitor_port && labels.monitor_port !== 'null' ? labels.monitor_port : '';
+    const key = `${name}\u0000${url}\u0000${hostname}\u0000${port}`;
+    const mon = byKey.get(key) ?? { name, url, hostname, port, state: 'unknown' as TileState, ms: null };
+    const v = Number(m[3]);
+    if (m[1] === 'monitor_status') {
+      mon.state = v === 1 ? 'up' : v === 0 ? 'down' : v === 2 ? 'pending' : v === 3 ? 'maintenance' : 'unknown';
+    } else if (v >= 0) {
+      mon.ms = Math.round(v);
+    }
+    byKey.set(key, mon);
+  }
+  return [...byKey.values()];
+}
+
+async function fetchKumaMonitors(): Promise<KumaMonitor[] | null> {
+  if (!KUMA_URL) return null;
+  const headers: Record<string, string> = {};
+  if (KUMA_API_KEY) headers.authorization = 'Basic ' + Buffer.from(':' + KUMA_API_KEY).toString('base64');
+  const res = await rawFetch(`${KUMA_URL}/metrics`, { headers, timeoutMs: 5_000 });
+  if (res.status !== 200) throw new Error(`Uptime Kuma /metrics HTTP ${res.status}`);
+  return parseKumaMetrics(res.body);
+}
+
+/** hostname:port with the scheme's default port filled in, so pve:8006 and pbs:8007 stay apart. */
+function hostPort(u: string): string | null {
+  try {
+    const x = new URL(u);
+    return `${x.hostname.toLowerCase()}:${x.port || (x.protocol === 'https:' ? '443' : '80')}`;
+  } catch { return null; }
+}
+
+// Match by monitor name, then by the monitored URL's host:port, then by a TCP
+// port monitor on the same host:port. Ping monitors only say the machine is up,
+// so they never stand in for a service.
+function matchMonitor(t: { name: string; url: string }, mons: KumaMonitor[]): KumaMonitor | undefined {
+  const name = t.name.trim().toLowerCase();
+  const hp = hostPort(t.url);
+  return mons.find((m) => m.name.trim().toLowerCase() === name)
+    ?? (hp ? mons.find((m) => m.url && hostPort(m.url) === hp) : undefined)
+    ?? (hp ? mons.find((m) => m.hostname && m.port && `${m.hostname.toLowerCase()}:${m.port}` === hp) : undefined);
+}
+
+/** Resolve once headers arrive; the body is never read. */
+function probe(url: string): Promise<{ state: TileState; ms: number | null; detail?: string }> {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    let u: URL;
+    try { u = new URL(url); } catch { return resolve({ state: 'unknown', ms: null, detail: 'bad url' }); }
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: { 'user-agent': 'havenlab-broker/status' },
+      rejectUnauthorized: false, // LAN services mostly use self-signed certs
+    }, (res) => {
+      const code = res.statusCode ?? 0;
+      res.destroy();
+      resolve({ state: code > 0 && code < 500 ? 'up' : 'down', ms: Date.now() - started, detail: `HTTP ${code}` });
+    });
+    req.on('error', (err) => resolve({ state: 'down', ms: null, detail: err.message }));
+    req.setTimeout(PROBE_TIMEOUT_MS, () => req.destroy(new Error(`timeout ${PROBE_TIMEOUT_MS}ms`)));
+    req.end();
+  });
+}
+
+function pushHistory(url: string, ms: number | null): number[] {
+  const h = latencyHistory.get(url) ?? [];
+  if (ms != null) h.push(ms);
+  if (h.length > HISTORY_LEN) h.splice(0, h.length - HISTORY_LEN);
+  latencyHistory.set(url, h);
+  return [...h];
+}
+
+async function refreshStatus(): Promise<Envelope<Record<string, TileStatus>>> {
+  let targets: Array<{ name: string; url: string }>;
+  try { targets = statusTargets(); } catch (err) { return fail(`Could not read config.json: ${err}`); }
+
+  let mons: KumaMonitor[] = [];
+  let kumaErr: string | undefined;
+  try { mons = (await fetchKumaMonitors()) ?? []; } catch (err) { kumaErr = String(err); }
+
+  const entries = await Promise.all(targets.map(async (t): Promise<[string, TileStatus]> => {
+    const mon = matchMonitor(t, mons);
+    if (mon) {
+      return [t.url, { state: mon.state, source: 'kuma', ms: mon.ms, history: pushHistory(t.url, mon.ms), detail: `Uptime Kuma: ${mon.name}` }];
+    }
+    const p = await probe(t.url);
+    return [t.url, { state: p.state, source: 'probe', ms: p.ms, history: pushHistory(t.url, p.ms), detail: p.detail }];
+  }));
+
+  const env = ok(Object.fromEntries(entries));
+  if (kumaErr) env.error = kumaErr; // probes still cover every tile
+  statusCache = env;
+  return env;
+}
+
+function fetchStatus(): Promise<Envelope<Record<string, TileStatus>>> {
+  if (statusCache?.ts && Date.now() - statusCache.ts < STATUS_TTL_MS) return Promise.resolve(statusCache);
+  if (!statusInflight) statusInflight = refreshStatus().finally(() => { statusInflight = null; });
+  return statusInflight;
+}
+
+// ─── /api/lab — Proxmox VE, PBS and Portainer health rollup ──────────────────
+// One response feeds both the homepage light (state, groups, findings) and the
+// slide-over panel (hosts). Every source is optional and read-only: a source with
+// no token is 'off' and its light stays grey; nothing here writes upstream.
+
+type LabState = 'ok' | 'warn' | 'bad' | 'unknown';
+type LabGroup = 'proxmox' | 'backups' | 'docker';
+interface LabFinding { state: 'warn' | 'bad'; group: LabGroup; title: string; detail: string; where: string; }
+interface LabStorage { name: string; pct: number; state: LabState; }
+interface LabPveHost {
+  kind: 'pve'; name: string; state: LabState; online: boolean;
+  cpu_pct: number | null; mem_pct: number | null; uptime_days: number | null;
+  lxc_up: number; lxc_total: number; vm_up: number; vm_total: number;
+  storages: LabStorage[];
+  /** Guests that are stopped and listed in LAB_EXPECTED_STOPPED */
+  expected_stopped: string[];
+}
+interface LabPbsHost {
+  kind: 'pbs'; name: string; state: LabState;
+  datastores: LabStorage[];
+  last_backup: { at: number; ok: number; failed: number; guests: number } | null;
+  /** Oldest first, one per night (local day), last 7: 'ok' | 'warn' | 'bad' | 'none' */
+  nights: Array<'ok' | 'warn' | 'bad' | 'none'>;
+  last_verify_at: number | null;
+  last_gc: { at: number; ok: boolean } | null;
+}
+interface LabDockerHost {
+  kind: 'portainer'; name: string; state: LabState; online: boolean;
+  running: number; stopped: number; healthy: number; unhealthy: number; stacks: number;
+  snapshot_at: number | null;
+}
+type LabHost = LabPveHost | LabPbsHost | LabDockerHost;
+type LabSource = 'ok' | 'off' | 'error';
+interface LabHealth {
+  state: LabState;
+  groups: Record<LabGroup, LabState>;
+  findings: LabFinding[];
+  hosts: LabHost[];
+  sources: Record<LabGroup, { state: LabSource; error?: string }>;
+}
+
+const _pbsHost      = e('PBS_HOST') || e('PBS_URL');
+const PBS_URL       = _pbsHost ? normalizeUrl(_pbsHost, 'https', 8007) : '';
+const _pbsTokenId   = e('PBS_TOKENID');
+const _pbsSecret    = e('PBS_SECRET');
+// PBS separates token id and secret with ':' (PVE uses '=')
+const PBS_TOKEN     = _pbsTokenId && _pbsSecret ? `PBSAPIToken=${_pbsTokenId}:${_pbsSecret}` : e('PBS_TOKEN');
+const _ptHost       = e('PORTAINER_HOST') || e('PORTAINER_URL');
+const PORTAINER_URL = _ptHost ? normalizeUrl(_ptHost, 'https', 9443) : '';
+const PORTAINER_TOKEN = e('PORTAINER_TOKEN');
+/** Guest or container names (or PVE vmids) that are meant to be stopped. */
+const LAB_EXPECTED_STOPPED = new Set(e('LAB_EXPECTED_STOPPED').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+const LAB_STORAGE_WARN = num(Number(e('LAB_STORAGE_WARN', '80')), 80);
+const LAB_STORAGE_BAD  = num(Number(e('LAB_STORAGE_BAD', '92')), 92);
+const LAB_BACKUP_MAX_AGE_H = num(Number(e('LAB_BACKUP_MAX_AGE_H', '26')), 26);
+const LAB_VERIFY_MAX_AGE_D = num(Number(e('LAB_VERIFY_MAX_AGE_D', '14')), 14);
+
+const LAB_TTL_MS = 30_000;
+let labCache: Envelope<LabHealth> | null = null;
+let labInflight: Promise<Envelope<LabHealth>> | null = null;
+
+const RANK: Record<LabState, number> = { ok: 0, unknown: 1, warn: 2, bad: 3 };
+function worst(states: LabState[], empty: LabState = 'unknown'): LabState {
+  if (!states.length) return empty;
+  return states.reduce((a, b) => (RANK[b] > RANK[a] ? b : a));
+}
+function pctState(pct: number): 'ok' | 'warn' | 'bad' {
+  return pct >= LAB_STORAGE_BAD ? 'bad' : pct >= LAB_STORAGE_WARN ? 'warn' : 'ok';
+}
+function pct(used: number, total: number): number {
+  return total > 0 ? Math.round((used / total) * 100) : 0;
+}
+function expected(...names: Array<string | number | undefined>): boolean {
+  return names.some(n => n != null && LAB_EXPECTED_STOPPED.has(String(n).toLowerCase()));
+}
+function ago(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} days ago`;
+}
+async function labGetJson<T>(url: string, headers: Record<string, string>): Promise<T> {
+  const res = await rawFetch(url, { headers, timeoutMs: 6_000 });
+  if (res.status === 401 || res.status === 403) throw new Error(`HTTP ${res.status} (check the token and its role)`);
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${res.body.slice(0, 120)}`);
+  const body = parseJson<T>(res.body);
+  if (body == null) throw new Error('not JSON');
+  return body;
+}
+
+// Proxmox VE: one call to /cluster/resources covers nodes, guests and storage.
+async function labProxmox(findings: LabFinding[]): Promise<LabPveHost[]> {
+  const headers = { authorization: PX_TOKEN.startsWith('PVEAPIToken=') ? PX_TOKEN : `PVEAPIToken=${PX_TOKEN}` };
+  type Res = { type: string; node?: string; status?: string; name?: string; vmid?: number; template?: number;
+    cpu?: number; mem?: number; maxmem?: number; uptime?: number; storage?: string; disk?: number; maxdisk?: number; shared?: number };
+  const body = await labGetJson<{ data?: Res[] }>(`${PX_URL}/api2/json/cluster/resources`, headers);
+  const all = body.data ?? [];
+  const nodes = all.filter(r => r.type === 'node');
+  const seenShared = new Set<string>();
+  return nodes.map((n): LabPveHost => {
+    const name = n.node ?? '?';
+    const online = n.status === 'online';
+    const guests = all.filter(r => (r.type === 'lxc' || r.type === 'qemu') && r.node === name && !r.template);
+    const lxc = guests.filter(g => g.type === 'lxc');
+    const vm = guests.filter(g => g.type === 'qemu');
+    const expectedStopped: string[] = [];
+    for (const g of guests) {
+      if (g.status === 'running') continue;
+      const label = `${g.type === 'lxc' ? 'CT' : 'VM'} ${g.vmid} ${g.name ?? ''}`.trim();
+      if (expected(g.name, g.vmid)) { expectedStopped.push(label); continue; }
+      findings.push({ state: 'bad', group: 'proxmox', title: `${label} is ${g.status ?? 'not running'}`,
+        detail: 'Add its name or ID to LAB_EXPECTED_STOPPED if it is meant to be off.', where: name });
+    }
+    const storages: LabStorage[] = [];
+    for (const s of all.filter(r => r.type === 'storage' && r.node === name && r.status === 'available' && (r.maxdisk ?? 0) > 0)) {
+      const id = s.storage ?? '?';
+      if (s.shared) { if (seenShared.has(id)) continue; seenShared.add(id); }
+      const p = pct(s.disk ?? 0, s.maxdisk ?? 0);
+      const st = pctState(p);
+      storages.push({ name: id, pct: p, state: st });
+      if (st !== 'ok') findings.push({ state: st, group: 'proxmox', title: `${id} is ${p}% full`,
+        detail: `Amber at ${LAB_STORAGE_WARN}%, red at ${LAB_STORAGE_BAD}%.`, where: name });
+    }
+    storages.sort((a, b) => b.pct - a.pct);
+    if (!online) findings.push({ state: 'bad', group: 'proxmox', title: `Node ${name} is offline`, detail: 'Proxmox reports the node as not online.', where: name });
+    const own: LabState[] = [online ? 'ok' : 'bad', ...storages.map(s => s.state)];
+    if (guests.some(g => g.status !== 'running' && !expected(g.name, g.vmid))) own.push('bad');
+    return {
+      kind: 'pve', name, online, state: worst(own),
+      cpu_pct: online && n.cpu != null ? Math.round(n.cpu * 100) : null,
+      mem_pct: online && n.maxmem ? pct(n.mem ?? 0, n.maxmem) : null,
+      uptime_days: online && n.uptime != null ? Math.floor(n.uptime / 86400) : null,
+      lxc_up: lxc.filter(g => g.status === 'running').length, lxc_total: lxc.length,
+      vm_up: vm.filter(g => g.status === 'running').length, vm_total: vm.length,
+      storages, expected_stopped: expectedStopped,
+    };
+  });
+}
+
+/** 'tank-backup:ct/104' → 'CT 104' */
+function guestLabel(workerId: string): string {
+  const m = workerId.match(/(ct|vm|host)\/([^/:]+)/i);
+  return m ? `${m[1].toUpperCase()} ${m[2]}` : workerId;
+}
+
+// Proxmox Backup Server: datastore usage plus the last two weeks of tasks.
+async function labPbs(findings: LabFinding[]): Promise<LabPbsHost> {
+  const headers = { authorization: PBS_TOKEN.startsWith('PBSAPIToken=') ? PBS_TOKEN : `PBSAPIToken=${PBS_TOKEN}` };
+  const since = Math.floor(Date.now() / 1000) - 15 * 86400;
+  type Task = { worker_type: string; worker_id?: string; starttime: number; endtime?: number; status?: string };
+  const [usage, tasks] = await Promise.all([
+    labGetJson<{ data?: Array<{ store: string; total?: number; used?: number }> }>(`${PBS_URL}/api2/json/status/datastore-usage`, headers),
+    labGetJson<{ data?: Task[] }>(`${PBS_URL}/api2/json/nodes/localhost/tasks?since=${since}&limit=2000`, headers),
+  ]);
+  const name = new URL(PBS_URL).hostname;
+  const datastores: LabStorage[] = (usage.data ?? []).filter(d => (d.total ?? 0) > 0).map(d => {
+    const p = pct(d.used ?? 0, d.total ?? 0);
+    const st = pctState(p);
+    if (st !== 'ok') findings.push({ state: st, group: 'backups', title: `Datastore ${d.store} is ${p}% full`,
+      detail: `Amber at ${LAB_STORAGE_WARN}%, red at ${LAB_STORAGE_BAD}%.`, where: name });
+    return { name: d.store, pct: p, state: st };
+  });
+
+  const done = (tasks.data ?? []).filter(t => t.endtime != null && t.status != null);
+  const taskState = (t: Task): 'ok' | 'warn' | 'bad' => t.status === 'OK' ? 'ok' : /^WARNINGS/.test(t.status ?? '') ? 'warn' : 'bad';
+  const backups = done.filter(t => t.worker_type === 'backup').sort((a, b) => b.starttime - a.starttime);
+  const now = Date.now();
+  const own: LabState[] = datastores.map(d => d.state);
+
+  // "Last run": backups that started within 3 h of the newest one (a nightly job).
+  let lastBackup: LabPbsHost['last_backup'] = null;
+  if (backups.length) {
+    const newest = backups[0].starttime;
+    const run = backups.filter(t => newest - t.starttime < 3 * 3600);
+    const failedGuests = new Set(run.filter(t => taskState(t) === 'bad').map(t => t.worker_id ?? '?'));
+    const guests = new Set(run.map(t => t.worker_id ?? '?'));
+    lastBackup = { at: newest * 1000, ok: guests.size - failedGuests.size, failed: failedGuests.size, guests: guests.size };
+    if (failedGuests.size) {
+      own.push('bad');
+      findings.push({ state: 'bad', group: 'backups', title: `${failedGuests.size} backup${failedGuests.size > 1 ? 's' : ''} failed`,
+        detail: `${[...failedGuests].slice(0, 4).map(guestLabel).join(', ')} in the run that started ${ago(now - newest * 1000)}.`, where: name });
+    }
+    if (now - newest * 1000 > LAB_BACKUP_MAX_AGE_H * 3600_000) {
+      own.push('warn');
+      findings.push({ state: 'warn', group: 'backups', title: 'No backup lately', detail: `The last one started ${ago(now - newest * 1000)}.`, where: name });
+    }
+  } else {
+    own.push('warn');
+    findings.push({ state: 'warn', group: 'backups', title: 'No backups in the last 15 days', detail: 'PBS shows no finished backup tasks.', where: name });
+  }
+
+  const nights: LabPbsHost['nights'] = [];
+  for (let i = 6; i >= 0; i--) {
+    const day = new Date(now - i * 86400_000).toDateString();
+    const sts = backups.filter(t => new Date(t.starttime * 1000).toDateString() === day).map(taskState);
+    nights.push(sts.length ? worst(sts) as 'ok' | 'warn' | 'bad' : 'none');
+  }
+
+  const verify = done.filter(t => /^verif/.test(t.worker_type)).sort((a, b) => b.starttime - a.starttime)[0];
+  const lastVerifyAt = verify ? verify.starttime * 1000 : null;
+  if (!lastVerifyAt || now - lastVerifyAt > LAB_VERIFY_MAX_AGE_D * 86400_000) {
+    own.push('warn');
+    findings.push({ state: 'warn', group: 'backups', title: 'Backups not verified lately',
+      detail: lastVerifyAt ? `Last verify ${ago(now - lastVerifyAt)}.` : `No verify job in the last 15 days.`, where: name });
+  }
+  const gc = done.filter(t => t.worker_type === 'garbage_collection').sort((a, b) => b.starttime - a.starttime)[0];
+  if (gc && taskState(gc) === 'bad') {
+    own.push('warn');
+    findings.push({ state: 'warn', group: 'backups', title: 'Garbage collection failed', detail: `Last run ${ago(now - gc.starttime * 1000)}.`, where: name });
+  }
+  return { kind: 'pbs', name, state: worst(own, 'ok'), datastores, last_backup: lastBackup, nights,
+    last_verify_at: lastVerifyAt, last_gc: gc ? { at: gc.starttime * 1000, ok: taskState(gc) !== 'bad' } : null };
+}
+
+// Portainer: environment snapshots give the counts; only when a snapshot shows
+// stopped or unhealthy containers do we list containers, to name them.
+async function labPortainer(findings: LabFinding[]): Promise<LabDockerHost[]> {
+  const headers = { 'x-api-key': PORTAINER_TOKEN };
+  type Snap = { RunningContainerCount?: number; StoppedContainerCount?: number; HealthyContainerCount?: number; UnhealthyContainerCount?: number; StackCount?: number; Time?: number };
+  const eps = await labGetJson<Array<{ Id: number; Name: string; Status: number; Snapshots?: Snap[] }>>(`${PORTAINER_URL}/api/endpoints`, headers);
+  return Promise.all(eps.map(async (ep): Promise<LabDockerHost> => {
+    const snap = ep.Snapshots?.[ep.Snapshots.length - 1] ?? {};
+    const online = ep.Status === 1;
+    const own: LabState[] = [online ? 'ok' : 'bad'];
+    if (!online) findings.push({ state: 'bad', group: 'docker', title: `${ep.Name} is unreachable`, detail: 'Portainer marks this environment as down.', where: ep.Name });
+    if (online && ((snap.StoppedContainerCount ?? 0) > 0 || (snap.UnhealthyContainerCount ?? 0) > 0)) {
+      try {
+        const cs = await labGetJson<Array<{ Names?: string[]; State?: string; Status?: string }>>(
+          `${PORTAINER_URL}/api/endpoints/${ep.Id}/docker/containers/json?all=1`, headers);
+        for (const c of cs) {
+          const cname = (c.Names?.[0] ?? '?').replace(/^\//, '');
+          const status = c.Status ?? '';
+          if (expected(cname)) continue;
+          // Exited (0) is a finished one-shot job, not a problem
+          const exit = status.match(/^Exited \((\d+)\)/);
+          if (c.State === 'restarting' || (exit && exit[1] !== '0')) {
+            own.push('bad');
+            findings.push({ state: 'bad', group: 'docker', title: `${cname} ${c.State === 'restarting' ? 'keeps restarting' : 'has exited'}`, detail: status, where: ep.Name });
+          } else if (/\(unhealthy\)/.test(status)) {
+            own.push('warn');
+            findings.push({ state: 'warn', group: 'docker', title: `${cname} is unhealthy`, detail: status, where: ep.Name });
+          }
+        }
+      } catch (err) {
+        // Edge agents can't always be listed live; fall back to the snapshot counts
+        if ((snap.UnhealthyContainerCount ?? 0) > 0) {
+          own.push('warn');
+          findings.push({ state: 'warn', group: 'docker', title: `${snap.UnhealthyContainerCount} unhealthy container(s)`, detail: `Couldn't list them: ${err}`, where: ep.Name });
+        }
+      }
+    }
+    return { kind: 'portainer', name: ep.Name, online, state: worst(own),
+      running: snap.RunningContainerCount ?? 0, stopped: snap.StoppedContainerCount ?? 0,
+      healthy: snap.HealthyContainerCount ?? 0, unhealthy: snap.UnhealthyContainerCount ?? 0,
+      stacks: snap.StackCount ?? 0, snapshot_at: snap.Time ? snap.Time * 1000 : null };
+  }));
+}
+
+async function refreshLab(): Promise<Envelope<LabHealth>> {
+  const findings: LabFinding[] = [];
+  const sources = {} as LabHealth['sources'];
+  const groups = {} as LabHealth['groups'];
+  const hosts: LabHost[] = [];
+
+  const run = async <T extends LabHost>(group: LabGroup, label: string, configured: boolean, fn: (f: LabFinding[]) => Promise<T | T[]>) => {
+    if (!configured) { sources[group] = { state: 'off' }; groups[group] = 'unknown'; return; }
+    const local: LabFinding[] = [];
+    try {
+      const out = await fn(local);
+      const list = Array.isArray(out) ? out : [out];
+      hosts.push(...list);
+      findings.push(...local);
+      sources[group] = { state: 'ok' };
+      groups[group] = worst(list.map(h => h.state), 'ok');
+    } catch (err) {
+      sources[group] = { state: 'error', error: String(err) };
+      groups[group] = 'warn';
+      findings.push({ state: 'warn', group, title: `Can't reach ${label}`, detail: String(err).replace(/^Error: /, ''), where: 'broker' });
+    }
+  };
+
+  // Sequential order keeps host cards stable: Proxmox nodes, PBS, then Docker
+  await run('proxmox', 'Proxmox', !!PX_TOKEN, labProxmox);
+  await run('backups', 'Proxmox Backup Server', !!(PBS_URL && PBS_TOKEN), labPbs);
+  await run('docker', 'Portainer', !!(PORTAINER_URL && PORTAINER_TOKEN), labPortainer);
+
+  findings.sort((a, b) => RANK[b.state] - RANK[a.state]);
+  const configured = (Object.keys(sources) as LabGroup[]).filter(g => sources[g].state !== 'off');
+  const state = worst(configured.map(g => groups[g]));
+  labCache = ok({ state, groups, findings, hosts, sources });
+  return labCache;
+}
+
+function fetchLab(force = false): Promise<Envelope<LabHealth>> {
+  if (!force && labCache?.ts && Date.now() - labCache.ts < LAB_TTL_MS) return Promise.resolve(labCache);
+  if (!labInflight) labInflight = refreshLab().finally(() => { labInflight = null; });
+  return labInflight;
+}
+
 // ─── /api/config — save config.json locally + push to GitHub ────────────────
 // Parses editConfigUrl from on-disk config. Uses GITHUB_WRITE_TOKEN (RW) for
 // commits; falls back to GITHUB_TOKEN if write token unset.
@@ -924,6 +1392,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/issues')   return json(await fetchIssues(force));
     if (pathname === '/api/proxmox')  return json(await fetchProxmox());
     if (pathname === '/api/adguard')  return json(await fetchAdguard());
+    if (pathname === '/api/status')   return json(await fetchStatus());
+    if (pathname === '/api/lab')      return json(await fetchLab(force));
 
     // GET /api/repo-icon/:owner/:repo — private-safe icon proxy (assets/icon.png)
     const iconMatch = pathname.match(/^\/api\/repo-icon\/([^/]+)\/([^/]+)\/?$/);
@@ -952,7 +1422,9 @@ const server = http.createServer(async (req, res) => {
         unifi: { url: UNIFI_URL, base: unifiResolvedBase, lastError: unifiLastError },
         github: { ro: !!GH_TOKEN_RO, rw: !!GH_TOKEN_RW && GH_TOKEN_RW !== GH_TOKEN_RO ? 'separate' : !!GH_TOKEN_RW },
 
-        cache: { dr7: !!dr7Cache, repos: !!reposCache, icons: iconCache.size },
+        kuma: { url: KUMA_URL || null, key: !!KUMA_API_KEY },
+        lab: { proxmox: !!PX_TOKEN, pbs: !!(PBS_URL && PBS_TOKEN), portainer: !!(PORTAINER_URL && PORTAINER_TOKEN) },
+        cache: { dr7: !!dr7Cache, repos: !!reposCache, icons: iconCache.size, status: !!statusCache, lab: !!labCache },
       });
     }
 
@@ -997,5 +1469,7 @@ server.listen(PORT, () => {
   console.log(`  UniFi: ${UNIFI_URL} ${UNIFI_API_KEY ? '(API key)' : UNIFI_USER ? '(user/pass)' : '(no auth)'}`);
   console.log(`  Proxmox: ${PX_URL} node=${PX_NODE} token=${PX_TOKEN ? 'set' : 'MISSING'}`);
   console.log(`  AdGuard: ${AG_URL} user=${AG_USER} pass=${AG_PASS ? 'set' : 'MISSING'}`);
+  console.log(`  Kuma:  ${KUMA_URL || '(not set — status uses probes only)'}`);
+  console.log(`  Lab:   PBS ${PBS_URL && PBS_TOKEN ? PBS_URL : '(off)'} · Portainer ${PORTAINER_URL && PORTAINER_TOKEN ? PORTAINER_URL : '(off)'}`);
   console.log(`  Dist:  ${DIST_DIR}`);
 });
