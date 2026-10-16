@@ -212,6 +212,7 @@ function Dr7Module({ env }: { env: Envelope<Dr7> | null }) {
 /* ---------- per-category sort + last-used (localStorage) ---------- */
 type CatSortMode = 'alpha' | 'recent';
 const CAT_SORT_KEY = 'haven.lab.catSort.v1';
+const SAVE_SECRET_KEY = 'haven.lab.saveSecret.v1';
 const APP_USED_KEY = 'haven.lab.appLastUsed.v1';
 
 function loadJson<T>(key: string, fallback: T): T {
@@ -742,6 +743,8 @@ function ConfigEditor({ cfg, onSave, onClose }: { cfg: DashConfig; onSave: (c: D
   const [jsonErr, setJsonErr] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<SyncState>('idle');
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [secret, setSecret] = useState<string>(() => { try { return localStorage.getItem(SAVE_SECRET_KEY) ?? ''; } catch { return ''; } });
+  const [rememberSecret, setRememberSecret] = useState<boolean>(() => { try { return !!localStorage.getItem(SAVE_SECRET_KEY); } catch { return false; } });
 
   const updateCat = (i: number, cat: Category) => {
     const categories = [...draft.categories]; categories[i] = cat; setDraft({ ...draft, categories });
@@ -766,10 +769,14 @@ function ConfigEditor({ cfg, onSave, onClose }: { cfg: DashConfig; onSave: (c: D
     try {
       const res = await fetch('/api/config', {
         method: 'PUT',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-haven-secret': secret },
         body: JSON.stringify(draft, null, 2),
       });
       const j: { ok: boolean; message: string } = await res.json();
+      try {
+        if (j.ok && rememberSecret) localStorage.setItem(SAVE_SECRET_KEY, secret);
+        else if (!rememberSecret || res.status === 401) localStorage.removeItem(SAVE_SECRET_KEY);
+      } catch { /* ignore */ }
       if (j.ok) {
         setSyncState('ok');
         setSyncMsg(j.message);
@@ -852,14 +859,27 @@ function ConfigEditor({ cfg, onSave, onClose }: { cfg: DashConfig; onSave: (c: D
               </span>
             )}
           </div>
-          <div style={{ display: 'flex', gap: '.5rem' }}>
+          <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+            <input
+              className="cfg-input cfg-secret"
+              type="password"
+              autoComplete="current-password"
+              placeholder="Save secret"
+              title="CONFIG_WRITE_SECRET from the broker .env"
+              value={secret}
+              onChange={e => setSecret(e.target.value)}
+            />
+            <label className="cfg-check-label" title="Keep the secret in this browser">
+              <input type="checkbox" checked={rememberSecret} onChange={e => setRememberSecret(e.target.checked)} /> remember
+            </label>
             <button className={'cfg-save-btn secondary' + (saved ? ' saved' : '')} onClick={handleSave}>
               {saved ? <><Check size={14} /> Applied</> : 'Apply'}
             </button>
             <button
               className={'cfg-save-btn gh-sync' + (syncState === 'pushing' ? ' pushing' : syncState === 'ok' ? ' saved' : syncState === 'err' ? ' err' : '')}
               onClick={handleSyncToGitHub}
-              disabled={syncState === 'pushing'}
+              disabled={syncState === 'pushing' || !secret}
+              title={secret ? undefined : 'Enter the save secret first'}
             >
               {syncState === 'pushing'
                 ? <><RefreshCw size={14} className="spin-icon" /> Saving…</>

@@ -19,7 +19,7 @@ repo — the real values live in the broker's uncommitted `.env`.
 | Proxmox VE | `https://192.168.1.10:8006` | HTTPS | LAN-only |
 | AdGuard Home | `http://192.168.1.20` | HTTP | LAN-only |
 | GitHub REST | `https://api.github.com` | HTTPS | Public internet |
-| Broker itself | `0.0.0.0:3000` | HTTP | LAN-only today |
+| Broker itself | `127.0.0.1:3000` (live: `:8787` behind nginx) | HTTP | Loopback only |
 
 Dashboard hostname: `home.lan.monkiesaresm.art` — the `.lan.` segment implies
 internal (split-horizon) resolution, i.e. it currently resolves on the LAN only.
@@ -43,11 +43,12 @@ tunnel (e.g. Cloudflare Tunnel / `cloudflared`).
 
 ## Trust boundary (security gap to carry forward)
 
-There is **no app-level auth in the code.** The dashboard is currently protected
-*only* by being LAN-reachable — implicit network trust. Exposing it publicly
+Reads have **no app-level auth.** The dashboard is protected by being
+LAN-reachable — implicit network trust. The one write path, `PUT /api/config`,
+needs `CONFIG_WRITE_SECRET` and a same-origin request. Exposing it publicly
 (e.g. Cloudflare Pages) removes that protection and requires an explicit access
-layer (e.g. Cloudflare Access / Zero Trust). The broker also returns
-`access-control-allow-origin: *`.
+layer (e.g. Cloudflare Access / Zero Trust). The broker sends no CORS
+headers.
 
 > Related prior art: the FlowScript POC (`fpoc.foxanddoveconsulting.com`) already
 > uses Cloudflare Access **service tokens** (`CF-Access-Client-Id` /

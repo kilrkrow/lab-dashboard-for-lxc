@@ -243,6 +243,7 @@
   .cfg-cat-name{font-weight:600;max-width:220px}
   .cfg-check-label{display:flex;align-items:center;gap:.3rem;font-size:.72rem;color:var(--t3);cursor:pointer;white-space:nowrap}
   .cfg-check-label input{accent-color:var(--accent)}
+  .cfg-secret{flex:0 0 auto;width:9.5rem;padding:.35rem .55rem;font-size:.78rem}
   .cfg-app-row{display:grid;grid-template-columns:1fr 1.5fr 1fr 160px auto;gap:.4rem;align-items:center}
   .cfg-del-btn{background:none;border:1px solid rgba(255,93,108,.3);color:var(--bad);border-radius:7px;padding:.32rem .42rem;cursor:pointer;display:flex;align-items:center;transition:.18s;flex-shrink:0}
   .cfg-del-btn:hover{background:rgba(255,93,108,.12)}
