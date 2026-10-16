@@ -22,6 +22,7 @@ RFCs in `.hermes/plans/`, not here. (Knowledge = the noun; an RFC = the verb.)
 - [`GET /api/proxmox`](endpoints/api-proxmox.md) — Proxmox node/guest stats (LAN).
 - [`GET /api/adguard`](endpoints/api-adguard.md) — AdGuard Home DNS stats (LAN).
 - [`GET /api/status`](endpoints/api-status.md) — up/down per service tile (Uptime Kuma, else direct probe; LAN).
+- [`GET /api/lab`](endpoints/api-lab.md) — Proxmox, PBS and Portainer health rollup for the Lab health light (LAN).
 - [`GET /api/repos`](endpoints/api-repos.md) — GitHub repo list + open-PR counts (public).
 - [`PUT /api/config`](endpoints/api-config.md) — save config to disk **and** commit to GitHub.
 - [`GET /config.json`](endpoints/config-json.md) — runtime dashboard config (read from disk).
