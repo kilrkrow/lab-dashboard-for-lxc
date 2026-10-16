@@ -54,6 +54,9 @@ const UNIFI_PREFIX_FORCED = process.env.UNIFI_API_PREFIX !== undefined;
 const GH_TOKEN_RO   = e('GITHUB_TOKEN') || e('GITHUB_RO_TOKEN');
 const GH_TOKEN_RW   = e('GITHUB_WRITE_TOKEN') || e('GITHUB_TOKEN_RW') || GH_TOKEN_RO;
 const GH_USER       = e('GITHUB_USER', 'kilrkrow');
+// Uptime Kuma — optional; /api/status falls back to direct probes without it
+const KUMA_URL      = e('KUMA_URL') ? normalizeUrl(e('KUMA_URL'), 'http') : '';
+const KUMA_API_KEY  = e('KUMA_API_KEY');
 
 /** Ensure scheme; if no explicit port, apply defaultPort (Proxmox API is :8006). */
 function normalizeUrl(hostOrUrl: string, defaultScheme: 'http' | 'https', defaultPort?: number): string {
@@ -83,9 +86,6 @@ const AG_URL        = normalizeUrl(_agHost, 'http');
 const AG_USER       = e('ADGUARD_USER',  'admin');
 const AG_PASS       = e('ADGUARD_PASS');
 const PORT          = parseInt(e('PORT', '3000'), 10);
-// Uptime Kuma — optional; /api/status falls back to direct probes without it
-const KUMA_URL      = e('KUMA_URL') ? normalizeUrl(e('KUMA_URL'), 'http') : '';
-const KUMA_API_KEY  = e('KUMA_API_KEY');
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR   = path.resolve(__dirname, '../dist');
