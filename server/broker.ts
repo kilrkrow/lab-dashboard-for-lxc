@@ -25,6 +25,8 @@
  *   ADGUARD_PASS     <password>
  *   CONFIG_PATH      /etc/haven/config.json        (default: ../public/config.json)
  *   PORT             3000
+ *   KUMA_URL         Uptime Kuma base (http://kuma.lan:3001) — optional, for /api/status
+ *   KUMA_API_KEY     Uptime Kuma API key (Settings → API Keys) for its /metrics
  */
 
 import http from 'node:http';
@@ -81,6 +83,9 @@ const AG_URL        = normalizeUrl(_agHost, 'http');
 const AG_USER       = e('ADGUARD_USER',  'admin');
 const AG_PASS       = e('ADGUARD_PASS');
 const PORT          = parseInt(e('PORT', '3000'), 10);
+// Uptime Kuma — optional; /api/status falls back to direct probes without it
+const KUMA_URL      = e('KUMA_URL') ? normalizeUrl(e('KUMA_URL'), 'http') : '';
+const KUMA_API_KEY  = e('KUMA_API_KEY');
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR   = path.resolve(__dirname, '../dist');
@@ -801,6 +806,162 @@ async function fetchAdguard(): Promise<Envelope<object>> {
   }
 }
 
+// ─── /api/status — real up/down for service tiles ────────────────────────────
+// Tiles in a `svc` category (and any tile with `grafana: true`) get a state.
+// Source 1: Uptime Kuma's Prometheus /metrics (KUMA_URL + KUMA_API_KEY), matched
+// to a tile by monitor name or by the monitored URL's hostname.
+// Source 2: for tiles with no matching monitor, the broker probes the tile URL
+// itself: any HTTP answer below 500 counts as up.
+// Only URLs from the on-disk config.json are probed, never client input.
+
+type TileState = 'up' | 'down' | 'pending' | 'maintenance' | 'unknown';
+interface TileStatus {
+  state: TileState;
+  source: 'kuma' | 'probe';
+  ms: number | null;
+  /** Recent response times (ms), oldest first, for the tile sparkline. */
+  history: number[];
+  detail?: string;
+}
+interface KumaMonitor { name: string; url: string; hostname: string; port: string; state: TileState; ms: number | null; }
+
+const STATUS_TTL_MS = 30_000;
+const PROBE_TIMEOUT_MS = 4_000;
+const HISTORY_LEN = 24;
+let statusCache: Envelope<Record<string, TileStatus>> | null = null;
+let statusInflight: Promise<Envelope<Record<string, TileStatus>>> | null = null;
+const latencyHistory = new Map<string, number[]>();
+
+function statusTargets(): Array<{ name: string; url: string }> {
+  const cfg = parseJson<{ categories?: Array<{ name?: string; svc?: boolean; apps?: Array<{ name?: string; url?: string; grafana?: boolean }> }> }>(
+    fs.readFileSync(CONFIG_PATH, 'utf8'),
+  );
+  const out = new Map<string, { name: string; url: string }>();
+  for (const cat of cfg?.categories ?? []) {
+    for (const app of cat.apps ?? []) {
+      if (!app.url || !/^https?:\/\//i.test(app.url)) continue;
+      if (cat.svc || app.grafana) out.set(app.url, { name: app.name ?? app.url, url: app.url });
+    }
+  }
+  return [...out.values()];
+}
+
+/** Parse `metric{a="b",...} value` lines; label order varies by Kuma version. */
+function parseKumaMetrics(text: string): KumaMonitor[] {
+  const byKey = new Map<string, KumaMonitor>();
+  const line = /^(monitor_status|monitor_response_time)\{([^}]*)\}\s+(-?[\d.eE+]+)/;
+  for (const raw of text.split('\n')) {
+    const m = raw.match(line);
+    if (!m) continue;
+    const labels: Record<string, string> = {};
+    for (const l of m[2].matchAll(/(\w+)="((?:[^"\\]|\\.)*)"/g)) labels[l[1]] = l[2].replace(/\\(.)/g, '$1');
+    const name = labels.monitor_name ?? '';
+    const url = labels.monitor_url && labels.monitor_url !== 'null' ? labels.monitor_url : '';
+    const hostname = labels.monitor_hostname && labels.monitor_hostname !== 'null' ? labels.monitor_hostname : '';
+    const port = labels.monitor_port && labels.monitor_port !== 'null' ? labels.monitor_port : '';
+    const key = `${name}\u0000${url}\u0000${hostname}\u0000${port}`;
+    const mon = byKey.get(key) ?? { name, url, hostname, port, state: 'unknown' as TileState, ms: null };
+    const v = Number(m[3]);
+    if (m[1] === 'monitor_status') {
+      mon.state = v === 1 ? 'up' : v === 0 ? 'down' : v === 2 ? 'pending' : v === 3 ? 'maintenance' : 'unknown';
+    } else if (v >= 0) {
+      mon.ms = Math.round(v);
+    }
+    byKey.set(key, mon);
+  }
+  return [...byKey.values()];
+}
+
+async function fetchKumaMonitors(): Promise<KumaMonitor[] | null> {
+  if (!KUMA_URL) return null;
+  const headers: Record<string, string> = {};
+  if (KUMA_API_KEY) headers.authorization = 'Basic ' + Buffer.from(':' + KUMA_API_KEY).toString('base64');
+  const res = await rawFetch(`${KUMA_URL}/metrics`, { headers, timeoutMs: 5_000 });
+  if (res.status !== 200) throw new Error(`Uptime Kuma /metrics HTTP ${res.status}`);
+  return parseKumaMetrics(res.body);
+}
+
+/** hostname:port with the scheme's default port filled in, so pve:8006 and pbs:8007 stay apart. */
+function hostPort(u: string): string | null {
+  try {
+    const x = new URL(u);
+    return `${x.hostname.toLowerCase()}:${x.port || (x.protocol === 'https:' ? '443' : '80')}`;
+  } catch { return null; }
+}
+
+// Match by monitor name, then by the monitored URL's host:port, then by a TCP
+// port monitor on the same host:port. Ping monitors only say the machine is up,
+// so they never stand in for a service.
+function matchMonitor(t: { name: string; url: string }, mons: KumaMonitor[]): KumaMonitor | undefined {
+  const name = t.name.trim().toLowerCase();
+  const hp = hostPort(t.url);
+  return mons.find((m) => m.name.trim().toLowerCase() === name)
+    ?? (hp ? mons.find((m) => m.url && hostPort(m.url) === hp) : undefined)
+    ?? (hp ? mons.find((m) => m.hostname && m.port && `${m.hostname.toLowerCase()}:${m.port}` === hp) : undefined);
+}
+
+/** Resolve once headers arrive; the body is never read. */
+function probe(url: string): Promise<{ state: TileState; ms: number | null; detail?: string }> {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    let u: URL;
+    try { u = new URL(url); } catch { return resolve({ state: 'unknown', ms: null, detail: 'bad url' }); }
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: { 'user-agent': 'havenlab-broker/status' },
+      rejectUnauthorized: false, // LAN services mostly use self-signed certs
+    }, (res) => {
+      const code = res.statusCode ?? 0;
+      res.destroy();
+      resolve({ state: code > 0 && code < 500 ? 'up' : 'down', ms: Date.now() - started, detail: `HTTP ${code}` });
+    });
+    req.on('error', (err) => resolve({ state: 'down', ms: null, detail: err.message }));
+    req.setTimeout(PROBE_TIMEOUT_MS, () => req.destroy(new Error(`timeout ${PROBE_TIMEOUT_MS}ms`)));
+    req.end();
+  });
+}
+
+function pushHistory(url: string, ms: number | null): number[] {
+  const h = latencyHistory.get(url) ?? [];
+  if (ms != null) h.push(ms);
+  if (h.length > HISTORY_LEN) h.splice(0, h.length - HISTORY_LEN);
+  latencyHistory.set(url, h);
+  return [...h];
+}
+
+async function refreshStatus(): Promise<Envelope<Record<string, TileStatus>>> {
+  let targets: Array<{ name: string; url: string }>;
+  try { targets = statusTargets(); } catch (err) { return fail(`Could not read config.json: ${err}`); }
+
+  let mons: KumaMonitor[] = [];
+  let kumaErr: string | undefined;
+  try { mons = (await fetchKumaMonitors()) ?? []; } catch (err) { kumaErr = String(err); }
+
+  const entries = await Promise.all(targets.map(async (t): Promise<[string, TileStatus]> => {
+    const mon = matchMonitor(t, mons);
+    if (mon) {
+      return [t.url, { state: mon.state, source: 'kuma', ms: mon.ms, history: pushHistory(t.url, mon.ms), detail: `Uptime Kuma: ${mon.name}` }];
+    }
+    const p = await probe(t.url);
+    return [t.url, { state: p.state, source: 'probe', ms: p.ms, history: pushHistory(t.url, p.ms), detail: p.detail }];
+  }));
+
+  const env = ok(Object.fromEntries(entries));
+  if (kumaErr) env.error = kumaErr; // probes still cover every tile
+  statusCache = env;
+  return env;
+}
+
+function fetchStatus(): Promise<Envelope<Record<string, TileStatus>>> {
+  if (statusCache?.ts && Date.now() - statusCache.ts < STATUS_TTL_MS) return Promise.resolve(statusCache);
+  if (!statusInflight) statusInflight = refreshStatus().finally(() => { statusInflight = null; });
+  return statusInflight;
+}
+
 // ─── /api/config — save config.json locally + push to GitHub ────────────────
 // Parses editConfigUrl from on-disk config. Uses GITHUB_WRITE_TOKEN (RW) for
 // commits; falls back to GITHUB_TOKEN if write token unset.
@@ -924,6 +1085,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/issues')   return json(await fetchIssues(force));
     if (pathname === '/api/proxmox')  return json(await fetchProxmox());
     if (pathname === '/api/adguard')  return json(await fetchAdguard());
+    if (pathname === '/api/status')   return json(await fetchStatus());
 
     // GET /api/repo-icon/:owner/:repo — private-safe icon proxy (assets/icon.png)
     const iconMatch = pathname.match(/^\/api\/repo-icon\/([^/]+)\/([^/]+)\/?$/);
@@ -952,7 +1114,8 @@ const server = http.createServer(async (req, res) => {
         unifi: { url: UNIFI_URL, base: unifiResolvedBase, lastError: unifiLastError },
         github: { ro: !!GH_TOKEN_RO, rw: !!GH_TOKEN_RW && GH_TOKEN_RW !== GH_TOKEN_RO ? 'separate' : !!GH_TOKEN_RW },
 
-        cache: { dr7: !!dr7Cache, repos: !!reposCache, icons: iconCache.size },
+        kuma: { url: KUMA_URL || null, key: !!KUMA_API_KEY },
+        cache: { dr7: !!dr7Cache, repos: !!reposCache, icons: iconCache.size, status: !!statusCache },
       });
     }
 
@@ -997,5 +1160,6 @@ server.listen(PORT, () => {
   console.log(`  UniFi: ${UNIFI_URL} ${UNIFI_API_KEY ? '(API key)' : UNIFI_USER ? '(user/pass)' : '(no auth)'}`);
   console.log(`  Proxmox: ${PX_URL} node=${PX_NODE} token=${PX_TOKEN ? 'set' : 'MISSING'}`);
   console.log(`  AdGuard: ${AG_URL} user=${AG_USER} pass=${AG_PASS ? 'set' : 'MISSING'}`);
+  console.log(`  Kuma:  ${KUMA_URL || '(not set — status uses probes only)'}`);
   console.log(`  Dist:  ${DIST_DIR}`);
 });

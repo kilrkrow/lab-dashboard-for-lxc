@@ -26,6 +26,16 @@ export interface Proxmox {
   node: string; cpu_pct: number; mem_pct: number; temp_c: number | null;
   lxc_up: number; lxc_total: number; vm_up: number; vm_total: number; uptime_days: number | null;
 }
+export interface TileStatus {
+  state: 'up' | 'down' | 'pending' | 'maintenance' | 'unknown';
+  source: 'kuma' | 'probe';
+  ms: number | null;
+  /** Recent response times (ms), oldest first */
+  history: number[];
+  detail?: string;
+}
+/** Keyed by the tile's url from config.json */
+export type StatusMap = Record<string, TileStatus>;
 export interface Adguard { queries: number; blocked: number; blocked_pct: number; }
 
 export interface Envelope<T> { ok: boolean; stale: boolean; mock?: boolean; ts: number | null; data: T | null; error?: string; }

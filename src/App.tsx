@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Search, Hexagon, Pencil, Zap, ArrowDownAZ, Lock, RefreshCw, Plus, Trash2, X, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { getEnvelope } from './api';
-import type { Repo, GhIssue, Dr7, Proxmox, Adguard, Envelope } from './api';
+import type { Repo, GhIssue, Dr7, Proxmox, Adguard, Envelope, StatusMap, TileStatus } from './api';
 import './App.css';
 
 /* ---------- config.json (apps/sections), served locally by the broker ---------- */
@@ -245,11 +245,18 @@ function sortApps(apps: AppItem[], mode: CatSortMode, lastUsed: Record<string, n
 
 /* ---------- app tiles ---------- */
 function AppTile({
-  app, svc, grafanaData, wanDown, onOpen,
+  app, svc, status, wanDown, onOpen,
 }: {
-  app: AppItem; svc?: boolean; grafanaData: number[]; wanDown?: boolean; onOpen?: (app: AppItem) => void;
+  app: AppItem; svc?: boolean; status?: TileStatus; wanDown?: boolean; onOpen?: (app: AppItem) => void;
 }) {
   const [imgErr, setImgErr] = useState(false);
+  const state = app.wan && wanDown ? 'down' : status?.state ?? 'unknown';
+  const dotClass = state === 'up' ? '' : state === 'down' ? ' bad' : state === 'unknown' ? ' unknown' : ' warn';
+  const dotTitle = app.wan && wanDown
+    ? 'WAN down'
+    : status
+      ? `${state}${status.ms != null ? ` · ${status.ms}ms` : ''}${status.detail ? ` · ${status.detail}` : ''}`
+      : 'no status yet';
   return (
     <a
       href={app.url}
@@ -264,23 +271,23 @@ function AppTile({
       <div className="body">
         <div className="ttl">{app.name}</div>
         <div className="sub">{app.description}</div>
-        {app.grafana && <Spark values={grafanaData} h={22} />}
+        {app.grafana && status && status.history.length > 1 && <Spark values={status.history} h={22} />}
       </div>
-      {svc && <span className="svc-dot"><span className={'dot' + (app.wan && wanDown ? ' bad' : '')} /></span>}
+      {svc && <span className="svc-dot" title={dotTitle}><span className={'dot' + dotClass} /></span>}
     </a>
   );
 }
 
 /* ---------- category section with sort toggle ---------- */
 function CategorySection({
-  cat, sortMode, onToggleSort, lastUsed, onAppOpen, grafanaData, wanDown,
+  cat, sortMode, onToggleSort, lastUsed, onAppOpen, statuses, wanDown,
 }: {
   cat: Category;
   sortMode: CatSortMode;
   onToggleSort: () => void;
   lastUsed: Record<string, number>;
   onAppOpen: (app: AppItem) => void;
-  grafanaData: number[];
+  statuses: StatusMap;
   wanDown: boolean;
 }) {
   const apps = useMemo(
@@ -310,7 +317,7 @@ function CategorySection({
             key={appKey(a)}
             app={a}
             svc={cat.svc}
-            grafanaData={grafanaData}
+            status={statuses[a.url]}
             wanDown={wanDown}
             onOpen={onAppOpen}
           />
@@ -910,7 +917,8 @@ export default function App() {
   const dr7 = usePoll<Dr7>('/api/dr7', 3000);
   const proxmox = usePoll<Proxmox>('/api/proxmox', 5000);
   const adguard = usePoll<Adguard>('/api/adguard', 30000);
-  const [grafana, setGrafana] = useState<number[]>(() => Array.from({ length: 24 }, (_, i) => 35 + ((i * 17) % 40)));
+  const status = usePoll<StatusMap>('/api/status', 30000);
+  const statuses = status?.data ?? {};
 
   // Live GITHUB repos (full list from API — not static config category)
   useEffect(() => {
@@ -950,10 +958,6 @@ export default function App() {
   useEffect(() => {
     fetch('/config.json', { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(); return r.json(); })
       .then((d: DashConfig) => { setCfg(d); if (d.title) document.title = d.title; }).catch(() => setCfgErr(true));
-  }, []);
-  useEffect(() => {
-    const id = setInterval(() => setGrafana((g) => [...g.slice(1), 35 + ((g[g.length - 1] + 13) % 40)]), 1600);
-    return () => clearInterval(id);
   }, []);
 
   // WAN badge from DR7 (not GitHub stale — that was a misleading coupling)
@@ -1028,7 +1032,7 @@ export default function App() {
             onToggleSort={() => toggleCatSort(cat.name)}
             lastUsed={lastUsed}
             onAppOpen={markAppUsed}
-            grafanaData={grafana}
+            statuses={statuses}
             wanDown={wanDown}
           />
         ))}

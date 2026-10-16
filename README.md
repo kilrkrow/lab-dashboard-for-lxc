@@ -23,6 +23,7 @@ Secrets live only in the broker `.env` (never in the browser).
 - Live **GITHUB** section: all repos from API (~40), public vs private styling, A–Z / Recent, refresh
 - Live **GITHUB ISSUES** section: open issues, collapsible, sort by name/date, refresh
 - Live vitals: weather, AdGuard, Proxmox, Dream Router 7 (UniFi)
+- **Real status dots** on `svc` category tiles: green up, red down, amber pending/maintenance, grey unknown (hover for detail). From Uptime Kuma when a monitor matches, otherwise the broker probes the tile URL. Tiles with `"grafana": true` show their real response-time sparkline
 - Deploy with timestamped backups + restore; agent live cycle scripts
 
 ## Getting started (dev)
@@ -51,6 +52,8 @@ See `.env.example`. Important GitHub vars (two-token model):
 | `GITHUB_TOKEN` (or `GITHUB_RO_TOKEN`) | RO — repo list, issues, PRs |
 | `GITHUB_WRITE_TOKEN` | RW — **Save to GitHub** for config only (e.g. `homelab-stacks`) |
 | `GITHUB_USER` | Search/list context (e.g. issues `user:…`) |
+
+Status dots: `KUMA_URL` (e.g. `http://kuma.haven:3001`) + `KUMA_API_KEY` (Uptime Kuma → Settings → API Keys) let the broker read Kuma's `/metrics`. A tile matches a monitor by **name** (case-insensitive), or by the monitored URL's host:port, or by a TCP-port monitor on the same host:port; ping monitors are not used. Tiles with no match, or every tile when Kuma isn't set or reachable, are probed directly every 30 s (any HTTP answer below 500 counts as up). Only URLs in the on-disk `config.json` are probed.
 
 UniFi (DR7): prefer the same user/pass style as UniFiHUD, or `UNIFI_API_KEY`.  
 Proxmox: `PROXMOX_HOST` (port **8006** defaulted if missing), `PROXMOX_TOKENID` + `PROXMOX_SECRET`.  
