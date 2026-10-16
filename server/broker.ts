@@ -533,9 +533,10 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
       all.push(...batch);
       if (batch.length < 100) break;
     }
+    const active = all.filter(r => !r.archived);
 
     // Open PRs per repo (best-effort). Use full_name so org repos work (not GH_USER/name).
-    const prCounts = await Promise.all(all.map(async (r) => {
+    const prCounts = await Promise.all(active.map(async (r) => {
       try {
         const pr = await rawFetch(
           `https://api.github.com/repos/${r.full_name}/pulls?state=open&per_page=1`,
@@ -547,14 +548,14 @@ async function fetchRepos(force = false): Promise<Envelope<RepoOut[]>> {
     }));
 
     // Probe for assets/icon.png (etc.) in parallel — private-safe via Contents API
-    const hasIcon = await Promise.all(all.map(async (r) => {
+    const hasIcon = await Promise.all(active.map(async (r) => {
       try {
         return await repoHasIconFile(r.full_name, hdr);
       } catch { return false; }
     }));
 
     // GitHub open_issues_count includes PRs — subtract so UI "issues" is issues-only
-    const out: RepoOut[] = all.map((r, i) => {
+    const out: RepoOut[] = active.map((r, i) => {
       const openPrs = prCounts[i];
       const issuesOnly = Math.max(0, (r.open_issues_count ?? 0) - openPrs);
       return {
