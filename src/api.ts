@@ -36,7 +36,16 @@ export interface TileStatus {
 }
 /** Keyed by the tile's url from config.json */
 export type StatusMap = Record<string, TileStatus>;
-export interface Adguard { queries: number; blocked: number; blocked_pct: number; }
+export interface Adguard {
+  queries: number;
+  blocked: number;
+  blocked_pct: number;
+  /** null when /control/status failed or was never fetched — never treat as enabled */
+  protection_enabled: boolean | null;
+  /** ms remaining while protection is paused; 0 when not in a timed pause; null if unknown */
+  protection_disabled_duration_ms: number | null;
+  running: boolean | null;
+}
 
 export interface Envelope<T> { ok: boolean; stale: boolean; mock?: boolean; ts: number | null; data: T | null; error?: string; }
 

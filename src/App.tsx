@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Hexagon, Pencil, Zap, ArrowDownAZ, Lock, RefreshCw, Plus, Trash2, X, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, Hexagon, Pencil, Zap, ArrowDownAZ, Lock, RefreshCw, Plus, Trash2, X, Check, ChevronDown, ChevronUp, Shield, HelpCircle } from 'lucide-react';
 import { getEnvelope } from './api';
 import type { Repo, GhIssue, Dr7, Adguard, Envelope, StatusMap, TileStatus, LabHealth } from './api';
 import { LabHealthCard, LabPanel } from './LabHealth';
@@ -13,6 +13,61 @@ interface DashConfig { title: string; editConfigUrl?: string; categories: Catego
 // Accept a full URL or root-relative path as-is; otherwise treat it as a dashboard-icons slug.
 const ICON = (s: string) => /^(https?:|\/|data:)/.test(s) ? s : `https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/${s}.png`;
 const LANG_COLOR: Record<string, string> = { TypeScript: '#3178c6', Python: '#3572A5', 'C#': '#178600', JavaScript: '#f1e05a', Shell: '#89e051' };
+
+type AgProtection = 'enabled' | 'disabled' | 'unknown';
+
+function formatPauseMs(ms: number | null | undefined): string | null {
+  if (ms == null || ms <= 0) return null;
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s remaining`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  if (min < 60) return rem ? `${min}m ${rem}s remaining` : `${min}m remaining`;
+  const hr = Math.floor(min / 60);
+  const m2 = min % 60;
+  return m2 ? `${hr}h ${m2}m remaining` : `${hr}h remaining`;
+}
+
+function resolveAgProtection(env: Envelope<Adguard> | null): AgProtection {
+  const d = env?.data;
+  if (!d || d.protection_enabled == null) return 'unknown';
+  // Stale/error with a prior known boolean still shows that state; envelope error is in the label.
+  return d.protection_enabled ? 'enabled' : 'disabled';
+}
+
+function AdguardCornerIcon({ env }: { env: Envelope<Adguard> | null }) {
+  const state = resolveAgProtection(env);
+  const d = env?.data;
+  const pause = formatPauseMs(d?.protection_disabled_duration_ms);
+  const staleBit = env && (!env.ok || env.stale || env.error) ? ' (stale or error)' : '';
+  let label = 'AdGuard protection unknown';
+  if (state === 'enabled') label = 'AdGuard protection enabled';
+  if (state === 'disabled') {
+    label = pause ? `AdGuard protection disabled, ${pause}` : 'AdGuard protection disabled';
+  }
+  label += staleBit;
+
+  if (state === 'enabled') {
+    return (
+      <span className="ico ag-ico ag-ico-ok" title={label} aria-label={label} role="img">
+        <Shield size={16} strokeWidth={2.25} aria-hidden />
+      </span>
+    );
+  }
+  if (state === 'disabled') {
+    return (
+      <span className="ico ag-ico ag-ico-bad" title={label} aria-label={label} role="img">
+        <span className="ag-badge" aria-hidden>!</span>
+      </span>
+    );
+  }
+  return (
+    <span className="ico ag-ico ag-ico-unk" title={label} aria-label={label} role="img">
+      <HelpCircle size={16} strokeWidth={2.25} aria-hidden />
+    </span>
+  );
+}
+
 const LAT = 44.6587, LON = -123.84;
 
 /** Repo tile / cmdk mark: custom assets/icon.png via broker proxy, else first letter. */
@@ -958,7 +1013,12 @@ export default function App() {
     setLabOpen(false);
     if (window.location.hash === '#health') history.replaceState(null, '', window.location.pathname + window.location.search);
   }, []);
-  const adguard = usePoll<Adguard>('/api/adguard', 30000);
+  const agPollMs = useMemo(() => {
+    const q = new URLSearchParams(window.location.search).get('agPollMs');
+    const n = q ? Number(q) : 30_000;
+    return Number.isFinite(n) && n >= 250 ? n : 30_000;
+  }, []);
+  const adguard = usePoll<Adguard>('/api/adguard', agPollMs);
   const status = usePoll<StatusMap>('/api/status', 30000);
   const statuses = status?.data ?? {};
 
@@ -1044,7 +1104,7 @@ export default function App() {
       <div className="vitals">
         <WeatherCard />
         <div className="vcard glass">
-          <div className="vh"><span className="lbl">AdGuard</span><span className="ico">🛡</span></div>
+          <div className="vh"><span className="lbl">AdGuard</span><AdguardCornerIcon env={adguard} /></div>
           <div className="donut">
             <div><div className="vbig" style={{ fontSize: '1.35rem' }}>{ag ? ag.blocked_pct : '—'}%</div><div className="vsub">blocked today<br /><b>{ag ? ag.blocked.toLocaleString() : '—'}</b> / {ag ? Math.round(ag.queries / 1000) + 'k' : '—'} queries</div></div>
           </div>
@@ -1085,6 +1145,10 @@ export default function App() {
           onClose={() => setCfgEditorOpen(false)}
         />
       )}
+
+      <div className="app-version" title={`Haven Lab dashboard v${__APP_VERSION__}`}>
+        v{__APP_VERSION__}
+      </div>
     </div>
   );
 }
