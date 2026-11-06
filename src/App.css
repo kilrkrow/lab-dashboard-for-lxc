@@ -37,6 +37,28 @@
   .vcard .vh{display:flex;align-items:center;justify-content:space-between;margin-bottom:.55rem}
   .vcard .vh .lbl{font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--t3);font-weight:600}
   .vcard .vh .ico{color:var(--accent);display:flex;opacity:.9}
+  .vcard .vh .ag-ico{align-items:center;justify-content:center}
+  .vcard .vh .ag-ico-ok{color:var(--accent);opacity:1}
+  .vcard .vh .ag-ico-bad{color:var(--bad);opacity:1}
+  .vcard .vh .ag-ico-unk{color:var(--t3);opacity:.85}
+  .vcard .vh .ag-badge{
+    width:18px;height:18px;border-radius:50%;
+    background:var(--bad);color:#1a0508;font-weight:800;font-size:.72rem;line-height:18px;
+    text-align:center;display:inline-flex;align-items:center;justify-content:center;
+    box-shadow:0 0 0 0 rgba(255,93,108,.55);
+    animation:ag-pulse 1.6s ease-out infinite;
+  }
+  @keyframes ag-pulse{
+    0%{box-shadow:0 0 0 0 rgba(255,93,108,.55)}
+    70%{box-shadow:0 0 0 8px rgba(255,93,108,0)}
+    100%{box-shadow:0 0 0 0 rgba(255,93,108,0)}
+  }
+  .app-version{
+    position:fixed;right:1rem;bottom:.75rem;z-index:40;
+    font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.68rem;
+    color:var(--t3);letter-spacing:.04em;user-select:none;pointer-events:none;
+    opacity:.75;
+  }
   .vbig{font-size:1.65rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
   .vsub{font-size:.78rem;color:var(--t2);margin-top:.3rem;line-height:1.35}
   .vsub b{color:var(--t1);font-weight:600}
@@ -345,4 +367,4 @@
   .lab-blips{display:flex;gap:3px;align-items:flex-end;height:18px}
   .lab-blips i{width:7px;height:100%;border-radius:2px;background:var(--ok);opacity:.85}
   .lab-blips i.n-warn{background:var(--warn)} .lab-blips i.n-bad{background:var(--bad)} .lab-blips i.n-none{background:var(--t3);height:40%}
-  @media (prefers-reduced-motion:reduce){.lab-sheet{animation:none}.labcard:hover{transform:none}}
+  @media (prefers-reduced-motion:reduce){.lab-sheet{animation:none}.labcard:hover{transform:none}.vcard .vh .ag-badge{animation:none}}
