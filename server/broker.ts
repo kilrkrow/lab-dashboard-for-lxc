@@ -767,6 +767,7 @@ async function fetchAdguard(): Promise<Envelope<object>> {
   if (!AG_PASS) return fail('ADGUARD_PASS not set');
   try {
     const basic = Buffer.from(`${AG_USER}:${AG_PASS}`).toString('base64');
+    const headers = { authorization: `Basic ${basic}` };
     // Prefer env URL; also try flipping http/https if the first scheme times out / fails
     const bases = [AG_URL];
     try {
@@ -775,24 +776,46 @@ async function fetchAdguard(): Promise<Envelope<object>> {
       bases.push(u.toString().replace(/\/$/, ''));
     } catch { /* ignore */ }
 
-    let res: Awaited<ReturnType<typeof rawFetch>> | null = null;
+    let statsRes: Awaited<ReturnType<typeof rawFetch>> | null = null;
+    let statusRes: Awaited<ReturnType<typeof rawFetch>> | null = null;
+    let workingBase = '';
     let lastErr = '';
+
     for (const base of bases) {
       try {
-        res = await rawFetch(`${base}/control/stats`, {
-          headers: { authorization: `Basic ${basic}` },
+        const res = await rawFetch(`${base}/control/stats`, {
+          headers,
           timeoutMs: 5_000,
         });
-        if (res.status === 200) break;
-        lastErr = `AdGuard HTTP ${res.status} from ${base}`;
+        if (res.status === 200) {
+          statsRes = res;
+          workingBase = base;
+          break;
+        }
+        lastErr = `AdGuard stats HTTP ${res.status} from ${base}`;
       } catch (err) {
         lastErr = String(err);
-        res = null;
       }
     }
-    if (!res || res.status !== 200) {
+
+    if (!statsRes || statsRes.status !== 200 || !workingBase) {
       throw new Error(lastErr || `AdGuard failed from ${AG_URL}`);
     }
+
+    // GET /control/status — ServerStatus.protection_enabled + protection_disabled_duration (ms)
+    // Never invent enabled: status failure leaves protection fields null (unknown).
+    try {
+      const res = await rawFetch(`${workingBase}/control/status`, {
+        headers,
+        timeoutMs: 5_000,
+      });
+      if (res.status === 200) statusRes = res;
+      else lastErr = `AdGuard status HTTP ${res.status} from ${workingBase}`;
+    } catch (err) {
+      lastErr = String(err);
+      statusRes = null;
+    }
+
     const j = parseJson<{
       num_dns_queries?: number;
       num_blocked_filtering?: number;
@@ -800,12 +823,44 @@ async function fetchAdguard(): Promise<Envelope<object>> {
       // some versions nest under different keys
       dns_queries?: number;
       blocked_filtering?: number;
-    }>(res.body);
-    if (!j) throw new Error('AdGuard empty response');
+    }>(statsRes.body);
+    if (!j) throw new Error('AdGuard empty stats response');
     const queries = j.num_dns_queries ?? j.dns_queries ?? 0;
     const blocked = j.num_blocked_filtering ?? j.blocked_filtering ?? 0;
-    const data = { queries, blocked, blocked_pct: queries > 0 ? Math.round(blocked / queries * 1000) / 10 : 0 };
+
+    let protection_enabled: boolean | null = null;
+    let protection_disabled_duration_ms: number | null = null;
+    let running: boolean | null = null;
+    if (statusRes?.status === 200) {
+      const st = parseJson<{
+        protection_enabled?: boolean;
+        protection_disabled_duration?: number;
+        running?: boolean;
+      }>(statusRes.body);
+      if (st && typeof st.protection_enabled === 'boolean') {
+        protection_enabled = st.protection_enabled;
+        protection_disabled_duration_ms =
+          typeof st.protection_disabled_duration === 'number'
+            ? st.protection_disabled_duration
+            : null;
+        running = typeof st.running === 'boolean' ? st.running : null;
+      }
+      // malformed status body -> leave nulls (unknown), keep stats
+    }
+
+    const data = {
+      queries,
+      blocked,
+      blocked_pct: queries > 0 ? Math.round(blocked / queries * 1000) / 10 : 0,
+      protection_enabled,
+      protection_disabled_duration_ms,
+      running,
+    };
     agCache = ok(data);
+    // Surface status-only failure without pretending protection is known
+    if (protection_enabled === null && lastErr) {
+      return { ...agCache, error: lastErr };
+    }
     return agCache;
   } catch (err) {
     if (agCache?.data) return { ...stale(agCache.data), error: String(err) };
